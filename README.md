@@ -38,10 +38,6 @@
 git clone https://github.com/Asatsuki0227/AsaPet.git
 cd AsaPet
 
-# 建议用虚拟环境
-python -m venv .venv
-.venv\Scripts\activate
-
 pip install -r requirements.txt
 
 # 把你喜欢的 PNG 图（建议已抠除背景）放到项目根目录，命名为 1.png
