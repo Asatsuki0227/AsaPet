@@ -1,0 +1,6 @@
+# 运行桌宠本体只需要 PySide6
+# QtWebSockets 是 PySide6 自带模块，不需要单独装
+PySide6>=6.5,<7.0
+
+# 如果你要自己打包 EXE，再装这个（运行时不需要）
+# pyinstaller>=6.0
