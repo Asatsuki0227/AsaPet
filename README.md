@@ -35,7 +35,7 @@
 ### 方式 A：直接跑源码
 
 ```bash
-git clone https://github.com/lieber138/AsaPet.git
+git clone https://github.com/Asatsuki0227/AsaPet.git
 cd AsaPet
 
 # 建议用虚拟环境
