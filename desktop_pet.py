@@ -13,6 +13,7 @@ import os
 import json
 import time
 import random
+from typing import Optional
 
 from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QSize, QUrl,
                             QElapsedTimer, Signal,
@@ -21,7 +22,7 @@ from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QSize, QUrl,
                             Property, QObject)
 from PySide6.QtGui import (QPixmap, QPainter, QAction, QCursor, QFont,
                            QColor, QPainterPath, QBrush, QPen, QIcon,
-                           QFontMetrics)
+                           QFontMetrics, QSurfaceFormat)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                                QSystemTrayIcon, QLineEdit, QVBoxLayout,
                                QInputDialog, QMessageBox, QDialog,
@@ -29,8 +30,14 @@ from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
 from PySide6.QtNetwork import QHostAddress, QNetworkRequest
 from PySide6.QtWebSockets import QWebSocketServer, QWebSocket
 
+from pet_renderer import (make_renderer, ImageRenderer, PetRenderer,
+                          LIVE2D_AVAILABLE)
+from character_dialog import CharacterDialog
+from updater import check_for_update, UpdateDialog
+
 
 # --------------------------- 配置区 ---------------------------
+VERSION = "1.0.0"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
@@ -206,11 +213,8 @@ class PetWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        # 加载图片
-        img_path = resource_path(IMAGE_FILE)
-        self._original_pixmap = QPixmap(img_path)
-        if self._original_pixmap.isNull():
-            raise RuntimeError(f"无法加载图片: {img_path}")
+        # 先读配置——渲染载体（图片 / Live2D）以及 AstrBot 参数都从这里来
+        self._config = load_config()
 
         # 窗口属性：无边框、透明、置顶、任务栏隐藏
         self._always_on_top = True
@@ -219,11 +223,13 @@ class PetWindow(QWidget):
 
         # 初始尺寸
         self._pet_height = DEFAULT_HEIGHT
-        self._scaled_pixmap = None
-        self._label = QLabel(self)
-        self._label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._label.setScaledContents(True)
-        self._rescale_pixmap()
+
+        # 渲染载体（QLabel+PNG 或 QOpenGLWidget+Live2D）
+        self._renderer: PetRenderer = self._make_renderer_from_config()
+        self._renderer.natural_size_changed.connect(
+            self._on_renderer_natural_size_changed)
+        self._renderer.tray_icon_changed.connect(self._refresh_tray_icon)
+        self._apply_pet_size()
 
         # 定位到屏幕右下角
         screen = QApplication.primaryScreen().availableGeometry()
@@ -235,12 +241,20 @@ class PetWindow(QWidget):
         self._is_dragging = False
         self._press_pos = None
 
+        # 滚轮缩放合并（见 wheelEvent）
+        self._pending_zoom_height: Optional[int] = None
+        self._zoom_timer = QTimer(self)
+        self._zoom_timer.setInterval(40)
+        self._zoom_timer.setSingleShot(True)
+        self._zoom_timer.timeout.connect(self._apply_pending_zoom)
+
         # 物理掉落相关
         self._phys_vx = 0.0          # 水平速度 (px/frame)
         self._phys_vy = 0.0          # 垂直速度 (px/frame)
         self._phys_x = 0.0           # 浮点位置 x
         self._phys_y = 0.0           # 浮点位置 y
         self._phys_active = False
+        self._physics_enabled = (self._config.get("pet_mode", "image") == "image")
         self._phys_timer = QTimer(self)
         self._phys_timer.setInterval(16)  # ~60fps
         self._phys_timer.timeout.connect(self._physics_step)
@@ -263,7 +277,6 @@ class PetWindow(QWidget):
         self._base_size = self.size()
 
         # AstrBot 聊天：OneBot v11 WS 客户端（主动连远程 AstrBot）
-        self._config = load_config()
         self._onebot = OneBotClient(self._config, parent=self)
         self._onebot.reply_received.connect(self._on_bot_reply)
         self._onebot.connection_changed.connect(self._on_connection_changed)
@@ -311,24 +324,68 @@ class PetWindow(QWidget):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
-    # ---------- 图片缩放 ----------
-    def _rescale_pixmap(self):
-        h = self._pet_height
-        # 保持原图宽高比
-        ow = self._original_pixmap.width()
-        oh = self._original_pixmap.height()
-        w = max(1, int(ow * h / oh))
-        self._scaled_pixmap = self._original_pixmap.scaled(
-            w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        self.setFixedSize(w, h)
-        self._label.setPixmap(self._scaled_pixmap)
-        self._label.setGeometry(0, 0, w, h)
-        self._base_size = self.size()
+    # ---------- 渲染载体 ----------
+    def _make_renderer_from_config(self) -> PetRenderer:
+        """按 config 的 pet_mode 创建 renderer。Live2D 失败时回退到图片。"""
+        mode = self._config.get("pet_mode", "image")
+        img = self._config.get("image_path", "") or resource_path(IMAGE_FILE)
+        l2d = self._config.get("live2d_model_path", "")
+        try:
+            return make_renderer(mode, img, l2d, self)
+        except Exception as e:
+            print(f"[Renderer] failed to build {mode}: {e}")
+            if mode == "image":
+                raise
+            # Live2D 起不来 → 回落图片模式；延迟弹一个气泡告诉用户
+            err = str(e)
+            QTimer.singleShot(1500, lambda: self._show_bubble(
+                f"……Live2D 加载失败了：\n{err}\n先用图片模式吧。",
+                duration_ms=6000))
+            fallback = img if img else resource_path(IMAGE_FILE)
+            return ImageRenderer(fallback, self)
+
+    def _apply_pet_size(self):
+        """按当前 pet_height 让 renderer 重排显示。renderer 自己会 resize 窗口。"""
+        size = self._renderer.set_display_height(self._pet_height)
+        self._base_size = QSize(size.width(), size.height())
+
+    def _on_renderer_natural_size_changed(self):
+        """Live2D 模型加载完拿到真实画布宽高比时触发。以中心为锚点原子重排。"""
+        old_geom = self.geometry()
+        anchor = old_geom.center()
+        new_size = self._renderer.natural_size_for_height(self._pet_height)
+        self.setGeometry(anchor.x() - new_size.width() // 2,
+                         anchor.y() - new_size.height() // 2,
+                         new_size.width(), new_size.height())
+        self._renderer.layout_for_size(new_size)
+        self._base_size = QSize(new_size.width(), new_size.height())
+        self._base_pos = self.pos()
+
+    def _refresh_tray_icon(self):
+        """renderer 通知托盘图标变了（或切换角色时）。回落顺序：renderer → 1.png → app.ico"""
+        if not hasattr(self, "_tray"):
+            return
+        icon = self._renderer.tray_icon()
+        if icon.isNull():
+            icon = self._fallback_tray_icon()
+        if not icon.isNull():
+            self._tray.setIcon(icon)
+
+    def _fallback_tray_icon(self) -> QIcon:
+        """托盘图标兜底：优先 1.png（角色原画），其次 app.ico"""
+        for name in (IMAGE_FILE, "app.ico"):
+            p = resource_path(name)
+            if os.path.exists(p):
+                ic = QIcon(p)
+                if not ic.isNull():
+                    return ic
+        return QIcon()
 
     # ---------- 系统托盘 ----------
     def _init_tray(self):
-        icon = QIcon(self._scaled_pixmap)
+        icon = self._renderer.tray_icon()
+        if icon.isNull():
+            icon = self._fallback_tray_icon()
         self._tray = QSystemTrayIcon(icon, self)
         menu = QMenu()
         act_show = QAction("显示 / 隐藏", self)
@@ -386,8 +443,11 @@ class PetWindow(QWidget):
                 # 视为点击 -> 触发互动
                 self._trigger_next_interaction()
             else:
-                # 拖动释放 -> 启动物理掉落
-                self._start_physics_from_drag()
+                # 拖动释放
+                if self._physics_enabled:
+                    self._start_physics_from_drag()
+                else:
+                    self._base_pos = self.pos()
             self._drag_pos = None
             self._is_dragging = False
             event.accept()
@@ -395,9 +455,22 @@ class PetWindow(QWidget):
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         step = WHEEL_STEP if delta > 0 else -WHEEL_STEP
-        self._resize_pet(self._pet_height + step)
+        # 滚轮合并：连续滚动只累积目标高度，每 ~40ms 应用一次。
+        # 每格都立刻重排的话，GL 帧总比窗口几何晚一拍，连续触发看起来就是抖。
+        base = self._pending_zoom_height if self._pending_zoom_height is not None \
+            else self._pet_height
+        self._pending_zoom_height = max(MIN_HEIGHT, min(MAX_HEIGHT, base + step))
+        if not self._zoom_timer.isActive():
+            self._zoom_timer.start()
         self._note_interaction()
         event.accept()
+
+    def _apply_pending_zoom(self):
+        if self._pending_zoom_height is None:
+            return
+        target = self._pending_zoom_height
+        self._pending_zoom_height = None
+        self._resize_pet(target)
 
     # ---------- 右键菜单 ----------
     def _show_context_menu(self, global_pos):
@@ -414,6 +487,15 @@ class PetWindow(QWidget):
         top_act.setChecked(self._always_on_top)
         top_act.triggered.connect(self._toggle_always_on_top)
         menu.addAction(top_act)
+
+        phys_act = QAction("物理掉落", self, checkable=True)
+        phys_act.setChecked(self._physics_enabled)
+        phys_act.triggered.connect(self._toggle_physics)
+        menu.addAction(phys_act)
+
+        switch_act = QAction("切换角色…", self)
+        switch_act.triggered.connect(self._open_character_dialog)
+        menu.addAction(switch_act)
 
         menu.addSeparator()
 
@@ -448,6 +530,11 @@ class PetWindow(QWidget):
         menu.addAction(proactive_act)
 
         menu.addSeparator()
+
+        update_act = QAction(f"检查更新（当前 v{VERSION}）", self)
+        update_act.triggered.connect(self._check_for_update)
+        menu.addAction(update_act)
+
         quit_act = QAction("退出程序", self)
         quit_act.triggered.connect(QApplication.instance().quit)
         menu.addAction(quit_act)
@@ -462,30 +549,54 @@ class PetWindow(QWidget):
         self.show()
         self.move(pos)
 
+    def _toggle_physics(self):
+        self._physics_enabled = not self._physics_enabled
+        if not self._physics_enabled:
+            self._stop_physics()
+
+    def _check_for_update(self):
+        """右键菜单"检查更新"入口。"""
+        info = check_for_update(VERSION)
+        if info is None:
+            QMessageBox.information(self, "检查更新", f"当前已是最新版本 v{VERSION}")
+            return
+        reply = QMessageBox.question(
+            self, "发现新版本",
+            f"新版本 v{info['version']}（当前 v{VERSION}）\n\n"
+            f"更新说明：\n{info['notes'][:300]}\n\n"
+            f"是否立即更新？（更新过程需要 1-2 分钟）",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        dlg = UpdateDialog(info["zip_url"], project_dir, parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.new_exe_path:
+            QMessageBox.information(self, "更新完成",
+                                   f"更新完成！新版本已打包到：\n{dlg.new_exe_path}\n\n"
+                                   f"即将重启...")
+            os.startfile(dlg.new_exe_path)
+            QApplication.instance().quit()
+
     def _resize_pet(self, new_height: int):
         new_height = max(MIN_HEIGHT, min(MAX_HEIGHT, int(new_height)))
         if new_height == self._pet_height:
             return
-        # 以中心为锚点缩放
-        old_center = self.geometry().center()
+        old_geom = self.geometry()
+        anchor = old_geom.center()
         self._pet_height = new_height
-        self._rescale_pixmap()
-        new_geom = self.geometry()
-        new_geom.moveCenter(old_center)
-        self.move(new_geom.topLeft())
+        new_size = self._renderer.natural_size_for_height(new_height)
+        self.setGeometry(anchor.x() - new_size.width() // 2,
+                         anchor.y() - new_size.height() // 2,
+                         new_size.width(), new_size.height())
+        self._renderer.layout_for_size(new_size)
+        self._base_size = QSize(new_size.width(), new_size.height())
         self._base_pos = self.pos()
 
     # ---------- 互动 ----------
     def _trigger_next_interaction(self):
-        # 若正在动画，忽略
-        if self._anim is not None and self._anim.state() == QPropertyAnimation.Running:
-            return
-        self._base_pos = self.pos()
-        self._base_size = self.size()
-
-        action = self._interactions[self._interaction_index % len(self._interactions)]
-        self._interaction_index += 1
-        action()
+        """单击释放的顶层反应：委托给渲染层做动画/动作，同时发 poke/兜底气泡。"""
+        self._renderer.on_click(self)
 
         # 戳一戳：优先发 poke 事件给 AstrBot；连不上时 fallback 到本地台词
         if self._onebot.connected:
@@ -495,6 +606,18 @@ class PetWindow(QWidget):
             # 否则等 AstrBot 通过 _on_bot_reply 回消息
         else:
             self._show_random_bubble()
+
+    def run_click_animation(self):
+        """图片模式的窗口级点击动画（jump/squash/shake 轮播）。由 ImageRenderer 调用。"""
+        # 若正在动画，忽略
+        if self._anim is not None and self._anim.state() == QPropertyAnimation.Running:
+            return
+        self._base_pos = self.pos()
+        self._base_size = self.size()
+
+        action = self._interactions[self._interaction_index % len(self._interactions)]
+        self._interaction_index += 1
+        action()
 
     def _show_random_bubble(self):
         text = random.choice(DIALOGUES)
@@ -533,6 +656,8 @@ class PetWindow(QWidget):
         if not text:
             return
         self._show_bubble(text)
+        # 让渲染层做个"回话"反应（Live2D 会播 happy/curious/neutral 之一）
+        self._renderer.on_message(text, self)
 
     def _on_connection_changed(self, connected: bool):
         """WS 连接状态变化"""
@@ -553,6 +678,65 @@ class PetWindow(QWidget):
         self._onebot.stop()
         QTimer.singleShot(300, self._onebot.start)
         self._show_bubble("……嗯，我再试试。", duration_ms=1500)
+
+    # ---------- 切换角色（图片 / Live2D） ----------
+    def _open_character_dialog(self):
+        dlg = CharacterDialog(
+            current_mode=self._config.get("pet_mode", "image"),
+            image_path=self._config.get("image_path", ""),
+            live2d_path=self._config.get("live2d_model_path", ""),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        mode, img, l2d = dlg.result_value()
+        self._config["pet_mode"] = mode
+        self._config["image_path"] = img
+        self._config["live2d_model_path"] = l2d
+        save_config(self._config)
+        self._swap_renderer()
+
+    def _swap_renderer(self):
+        """
+        原地更换渲染载体：停动画/物理 → 销毁旧 widget → 建新的 → 重排尺寸 → 更新托盘。
+        Live2D 的 GL 上下文会随着 widget 析构一起清掉。
+        """
+        # 停掉一切正在跑的动画
+        if self._anim is not None and self._anim.state() == QPropertyAnimation.Running:
+            self._anim.stop()
+        self._anim = None
+        self._stop_physics()
+
+        # 断开旧 renderer 的信号，销毁其 widget
+        try:
+            self._renderer.natural_size_changed.disconnect(
+                self._on_renderer_natural_size_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._renderer.tray_icon_changed.disconnect(self._refresh_tray_icon)
+        except (TypeError, RuntimeError):
+            pass
+        old_widget = self._renderer.widget()
+        self._renderer.cleanup()
+        if old_widget is not None:
+            old_widget.hide()
+            old_widget.setParent(None)
+            old_widget.deleteLater()
+
+        # 建新 renderer；失败时 _make_renderer_from_config 会自动回退到图片
+        self._renderer = self._make_renderer_from_config()
+        self._renderer.natural_size_changed.connect(
+            self._on_renderer_natural_size_changed)
+        self._renderer.tray_icon_changed.connect(self._refresh_tray_icon)
+        self._physics_enabled = (self._config.get("pet_mode", "image") == "image")
+        self._apply_pet_size()
+        self._renderer.widget().show()
+
+        # 更新托盘图标（图片模式立即有；Live2D 先回落 app.ico，等截图后由 tray_icon_changed 再更新）
+        self._refresh_tray_icon()
+
+        self._show_bubble("……嗯，换了个样子。", duration_ms=1600)
 
     # ---------- 待机动画 ----------
     def _note_interaction(self):
@@ -581,13 +765,10 @@ class PetWindow(QWidget):
             self._schedule_idle_check(5000)
             return
 
-        # 随机挑一个待机动作
-        action = random.choice(self._idle_actions)
-        self._base_pos = self.pos()
-        self._base_size = self.size()
-        action()
+        # 让渲染层挑一个待机动作（图片：窗口动画；Live2D：StartMotion）
+        self._renderer.on_idle(self)
 
-        # 有一定概率冒个独白气泡
+        # 有一定概率冒个独白气泡（不依赖具体载体）
         if random.random() < IDLE_BUBBLE_CHANCE:
             text = random.choice(IDLE_DIALOGUES)
             self._show_bubble(text, duration_ms=2500)
@@ -595,6 +776,13 @@ class PetWindow(QWidget):
         # 再等一段随机时间做下一次待机
         next_delay = random.randint(IDLE_INTERVAL_MIN_MS, IDLE_INTERVAL_MAX_MS)
         self._schedule_idle_check(next_delay)
+
+    def run_idle_animation(self):
+        """图片模式的窗口级 idle 动画。由 ImageRenderer 调用。"""
+        action = random.choice(self._idle_actions)
+        self._base_pos = self.pos()
+        self._base_size = self.size()
+        action()
 
     # ---- 待机动作：微微歪头（水平轻晃一下）----
     def _idle_tilt(self):
@@ -666,7 +854,7 @@ class PetWindow(QWidget):
             seq.addAnimation(grp)
 
         def _restore():
-            self.setFixedSize(base_w, base_h)
+            self.resize(base_w, base_h)
             self.move(base_pos)
 
         seq.finished.connect(_restore)
@@ -818,7 +1006,7 @@ class PetWindow(QWidget):
             seq.addAnimation(grp)
 
         def _restore():
-            self.setFixedSize(base_w, base_h)
+            self.resize(base_w, base_h)
             self.move(base_pos)
 
         seq.finished.connect(_restore)
@@ -968,6 +1156,10 @@ DEFAULT_CONFIG = {
     "self_id": "10001",                # 桌宠模拟的 bot QQ 号（跟 NapCat 那个不能相同）
     "user_id": "20001",                # 桌宠模拟的你的 QQ 号（区分会话记忆）
     "nickname": "诶嘿",                # 奏对你的称呼
+    # 载体：图片 or Live2D
+    "pet_mode": "image",               # "image" | "live2d"
+    "image_path": "",                  # 空 → 用内置 1.png
+    "live2d_model_path": "",           # xxx.model3.json 的绝对路径
 }
 
 
@@ -1216,7 +1408,7 @@ class OneBotClient(QObject):
                 "retcode": 0,
                 "data": {
                     "app_name": "KanadePet",
-                    "app_version": "1.0.0",
+                    "app_version": VERSION,
                     "protocol_version": "v11",
                 },
             }
@@ -1336,6 +1528,11 @@ def main():
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, "AA_UseHighDpiPixmaps"):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+    # 让 QOpenGLWidget 拿到带 alpha 通道的默认 surface 格式——Live2D 模式下透明背景所需
+    fmt = QSurfaceFormat()
+    fmt.setAlphaBufferSize(8)
+    QSurfaceFormat.setDefaultFormat(fmt)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # 关闭窗口时不退出，靠菜单退出

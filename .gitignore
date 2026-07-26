@@ -43,3 +43,6 @@ Thumbs.db
 
 # 开发过程笔记（本地留档）
 PROGRESS.md
+
+# Claude Code 本地配置
+.claude/

@@ -2,7 +2,9 @@
 
 一个 Windows 桌面宠物。窗口透明、无边框、始终置顶，可拖动、可弹跳、有互动、有气泡，也可以选择挂到 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 上跟 LLM 聊天。
 
-角色示例是《世界计划 缤纷舞台》里的宵崎奏，但**代码本身与角色无关**，你可以把 `1.png` 换成任何 PNG 图片，桌宠就变成你想要的样子。
+**载体可选：透明 PNG 图片，或 Live2D 模型**（Cubism 3+）。前者轻量，后者能真正动起来。
+
+角色示例是《世界计划 缤纷舞台》里的宵崎奏，但**代码本身与角色无关**，你可以把 `1.png` 换成任何 PNG 图片，或用菜单里的"切换角色…"挂载你自备的 Live2D 模型。
 
 ---
 
@@ -11,10 +13,10 @@
 **基础互动**
 - 无边框、透明背景、始终置顶（可开关）
 - 左键拖动摆放，甩出去会有真实感的重力/弹跳
-- 单击轮流触发：跳跃 / 压扁回弹 / 左右抖动
+- 单击轮流触发：跳跃 / 压扁回弹 / 左右抖动（图片模式）；随机播放身体 + 表情动作组合（Live2D 模式）
 - 每次互动随机冒气泡（不遮挡角色）
 - 鼠标滚轮缩放
-- 右键菜单：调整大小、置顶开关、待机/主动搭话开关、退出
+- 右键菜单：调整大小、置顶开关、**切换角色（图片 / Live2D）**、待机/主动搭话开关、退出
 
 **"活着"的感觉**
 - **待机动画**：3 分钟没人理它，会自己微微歪头 / 呼吸 / 打瞌睡 / 张望，偶尔冒句独白
@@ -61,7 +63,39 @@ pyinstaller AsaPet.spec --noconfirm
 
 ---
 
-## 素材说明（重要）
+## 启用 Live2D 模式（可选）
+
+想让桌宠用真正的 Live2D 模型动起来（眨眼、呼吸、身体+表情分层动作），按下面步骤：
+
+**1. 装依赖**
+
+```bash
+pip install live2d-py
+```
+
+- 要求 **Python ≥ 3.11**（本项目默认已满足）
+- Windows x64 有预编译 wheel，会顺带把 Cubism Core DLL 装好
+- 只装图片模式不需要这个包
+
+**2. 准备一个 Cubism 3+ 模型**
+
+需要一份完整的 Live2D 模型目录，至少包含：
+- `xxx.model3.json`（入口）
+- `xxx.moc3`
+- 贴图目录（通常 `xxx.2048/texture_00.png`）
+- 建议：`motions/` 里放 motion 文件；`physics3.json` 有更自然的物理
+
+**仓库不含任何模型资产**——请自备。不要把你不拥有版权的官方角色模型放进你的公开仓库。
+
+**3. 切换**
+
+启动程序 → 右键 → "切换角色…" → 选 "Live2D 模式" → 浏览到你的 `xxx.model3.json` → 确定。选择会写进 `config.json`，下次启动直接生效。
+
+**动作映射**：程序会读模型的 motion group 名字，按前缀分桶（happy / sad / angry / shy / sleepy / tease / curious / neutral），单击时随机播一个「身体动作 + 表情动作」组合，待机时播小幅动作。如果你的模型不用 Project Sekai 那套 `w-*` / `face_*` 命名，代码会静默降级到"随便播一个"——想要更精细的映射可以改 `pet_renderer.py` 里的 `_MOOD_BUCKETS`。
+
+**授权提醒**：Live2D Cubism SDK 商用有独立授权条款，个人非商用免费。详见 [Live2D 官方](https://www.live2d.com/en/download/cubism-sdk/release-license/)。
+
+---
 
 **仓库里不附带任何角色图片**。你需要自行准备一张 PNG 图（建议已抠除背景），放到项目根目录并命名为 `1.png`。
 
@@ -83,7 +117,10 @@ pyinstaller AsaPet.spec --noconfirm
   "user_id": "20001",
   "nickname": "主人",
   "idle_animation": true,
-  "proactive_chat": false
+  "proactive_chat": false,
+  "pet_mode": "image",
+  "image_path": "",
+  "live2d_model_path": ""
 }
 ```
 
@@ -96,6 +133,9 @@ pyinstaller AsaPet.spec --noconfirm
 | `nickname` | 角色对你的称呼 |
 | `idle_animation` | 是否开启待机动画（3 分钟空闲后触发） |
 | `proactive_chat` | 是否开启主动搭话（每 20~60 分钟一次） |
+| `pet_mode` | 载体："image" 或 "live2d" |
+| `image_path` | 图片模式的图片路径，留空则用内置 1.png |
+| `live2d_model_path` | Live2D 模式的 .model3.json 绝对路径 |
 
 ---
 
@@ -115,7 +155,9 @@ pyinstaller AsaPet.spec --noconfirm
 
 ```
 AsaPet/
-├── desktop_pet.py         # 主程序
+├── desktop_pet.py         # 主程序（窗口壳、拖动、菜单、AstrBot 集成）
+├── pet_renderer.py        # 渲染层：ImageRenderer / Live2DRenderer + MotionPicker
+├── character_dialog.py    # "切换角色…" 对话框
 ├── AsaPet.spec            # PyInstaller 打包配置
 ├── requirements.txt       # 依赖清单
 ├── AstrBot对接说明.md      # 与 AstrBot 集成的详细说明
@@ -154,8 +196,9 @@ A: 在 AstrBot 的 system prompt 里加一句：
 
 ## 技术栈
 
-- Python 3.10+（开发用的是 3.14，向下兼容到 3.10 应该没问题）
-- [PySide6](https://pypi.org/project/PySide6/)（Qt for Python），用到了 `QtWidgets` / `QtWebSockets`
+- Python 3.11+（Live2D 模式需要；纯图片模式 3.10 也能跑）
+- [PySide6](https://pypi.org/project/PySide6/)（Qt for Python），用到了 `QtWidgets` / `QtWebSockets` / `QtOpenGLWidgets`
+- [live2d-py](https://github.com/Arkueid/live2d-py)（可选）—— Cubism SDK 5 的 Python 绑定
 - 打包用 [PyInstaller](https://pyinstaller.org/)
 
 ---

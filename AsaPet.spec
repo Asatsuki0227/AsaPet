@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_all
+
+# 收集 live2d-py 的所有子模块 + 二进制（Cubism Core DLL）+ 数据文件
+live2d_datas, live2d_binaries, live2d_hiddenimports = collect_all('live2d')
 
 a = Analysis(
     ['desktop_pet.py'],
     pathex=[],
-    binaries=[],
-    datas=[('1.png', '.')],
-    hiddenimports=['PySide6.QtWebSockets', 'PySide6.QtNetwork'],
+    binaries=live2d_binaries,
+    datas=[('1.png', '.'), ('app.ico', '.')] + live2d_datas,
+    hiddenimports=[
+        'PySide6.QtWebSockets',
+        'PySide6.QtNetwork',
+        'PySide6.QtOpenGLWidgets',
+    ] + live2d_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
