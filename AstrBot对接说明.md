@@ -26,7 +26,7 @@ QQ 服务器 ←→ NapCat（在AstrBot主机上）─┐
 
 ### 方法 1：右键菜单里改
 
-1. 启动 `dist\KanadePet.exe`
+1. 启动 `dist\AsaPet.exe`
 2. **右键桌宠 → AstrBot 连接设置…**
 3. 填写：
    - **WS 地址**：`ws://<AstrBot主机IP>:6700`（改成你的实际 IP 和端口）
