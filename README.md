@@ -86,7 +86,7 @@ pip install live2d-py
 
 启动程序 → 右键 → "切换角色…" → 选 "Live2D 模式" → 浏览到你的 `xxx.model3.json` → 确定。选择会写进 `config.json`，下次启动直接生效。
 
-**动作映射**：程序会读模型的 motion group 名字，按前缀分桶（happy / sad / angry / shy / sleepy / tease / curious / neutral），单击时随机播一个「身体动作 + 表情动作」组合，待机时播小幅动作。如果你的模型不用 Project Sekai 那套 `w-*` / `face_*` 命名，代码会静默降级到"随便播一个"——想要更精细的映射可以改 `pet_renderer.py` 里的 `_MOOD_BUCKETS`。
+**动作映射**：程序会读模型的 motion group 名字，按前缀分桶（happy / sad / angry / shy / sleepy / tease / curious / neutral），对话回复时播一个「身体动作 + 表情动作」组合，待机时播小幅动作。如果你的模型不用 Project Sekai 那套 `w-*` / `face_*` 命名，代码会静默降级到"随便播一个"——**换模型后强烈建议看一下 [Live2D动作映射指南.md](Live2D动作映射指南.md)**，里面讲了匹配机制和怎么手动调整 `motion_map.json`。
 
 **情绪标签**：程序支持通过 `[emotion:xxx]` 标签触发对应情绪的动作。标签格式为 `[emotion:happy]`、`[emotion:sad]` 等（也支持 `[表情:xxx]`），可用的情绪有：`happy`、`sad`、`angry`、`shy`、`sleepy`、`tease`、`curious`、`neutral`。
 
@@ -201,6 +201,7 @@ AsaPet/
 ├── AsaPet.spec            # PyInstaller 打包配置
 ├── requirements.txt       # 依赖清单
 ├── AstrBot对接说明.md      # 与 AstrBot 集成的详细说明
+├── Live2D动作映射指南.md   # 换模型后怎么调整情绪→动作映射
 ├── app.ico                # 程序图标
 ├── 1.png                  # 角色图片（用户自备，不入仓库）
 ├── LICENSE                # MIT

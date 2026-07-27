@@ -41,7 +41,7 @@ from persona_dialog import PersonaDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120

@@ -144,13 +144,86 @@ _MOOD_BUCKETS: dict[str, tuple[list[str], list[str]]] = {
                 ["face_normal", "face_breath"]),
 }
 
-_CLICK_MOODS = ["happy", "tease", "curious", "shy"]
-_MESSAGE_MOODS = ["happy", "curious", "neutral", "tease"]
 _IDLE_MOODS = ["neutral", "sleepy"]
 
 # 情绪标签正则：匹配 [emotion:xxx] 或 [表情:xxx]
 import re
 _EMOTION_TAG_RE = re.compile(r"\[(?:emotion|表情)[：:]([a-zA-Z_]+)\]")
+
+# 没有情绪标签时，从回复文字（动作描写 + 对话）里猜情绪。
+# 按人设里常见的措辞分组关键词——不要求 AI 输出任何额外标签，纯靠文本本身判断。
+_MOOD_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "happy":   ("笑", "开心", "高兴", "期待", "雀跃", "心动", "暖", "欣慰", "喜欢"),
+    "sad":     ("难过", "伤心", "叹气", "叹了口气", "低落", "哭", "失落", "心疼",
+                "愧疚", "罪恶感", "抱歉", "对不起", "沉默", "沮丧", "疲惫地"),
+    "angry":   ("生气", "愠怒", "皱眉", "不满", "恼", "咬紧", "冷了下来"),
+    "shy":     ("害羞", "脸红", "不好意思", "脸颊", "别过脸", "低下头", "小声",
+                "耳朵红", "扭了扭", "捂住"),
+    "sleepy":  ("困", "睡", "打哈欠", "没精神", "犯困", "眼皮", "昏昏沉沉"),
+    "tease":   ("调皮", "逗", "促狭", "眨眼", "笑着说", "戳"),
+    "curious": ("疑惑", "好奇", "歪头", "歪了", "不解", "思考", "？", "什么意思",
+                "……是吗", "停顿"),
+}
+
+
+def guess_mood_from_text(text: str) -> str:
+    """
+    没有 [emotion:xxx] 标签时的兜底：按关键词命中数挑一个情绪桶，
+    全都不中就落到 neutral（比纯随机更贴合安静低能量的人设，也不会跟话对不上）。
+    """
+    best_mood = "neutral"
+    best_hits = 0
+    for mood, keywords in _MOOD_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw in text)
+        if hits > best_hits:
+            best_hits = hits
+            best_mood = mood
+    return best_mood
+
+
+# 具体动作词 → 模型动作组名里的关键片段（比情绪桶更精确，命中就直接播这个动作，
+# 不用再从一整桶里随机抽）。value 是当前 Live2D 模型（v2_17kanade）动作命名里的
+# 片段，比如 "w-adult01-nod" 的 "nod"。换模型后，这些片段如果对不上就自然落回情绪桶。
+_ACTION_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "nod":       ("点头", "点了点头", "点点头"),
+    "shakehead": ("摇头", "摇了摇头", "摇摇头"),
+    "tilthead":  ("歪头", "歪了歪头", "歪了一下头", "侧过头", "偏了偏头"),
+    "sigh":      ("叹气", "叹了口气", "轻叹", "叹了一声", "叹息"),
+    "blushed":   ("脸红", "红了脸", "脸颊泛红", "耳朵红", "红着脸"),
+    "cheek":     ("捂住脸", "捂脸", "摸了摸脸颊", "捂着脸"),
+    "wink":      ("眨眼", "眨了眨眼", "眨眼睛", "眨了一下眼"),
+    # 模型里没有「揉眼睛」这个动作，映到最接近的闭眼/困倦动作
+    "sleep":     ("打哈欠", "犯困", "闭上眼", "闭起眼", "打了个哈欠",
+                  "揉眼睛", "揉了揉眼睛", "揉着眼睛", "揉眼"),
+    "yurayura":  ("摇摇晃晃", "晃了晃", "身体摇晃", "晃了晃身体"),
+    "dizzy":     ("头晕", "眼前发黑", "晕乎乎"),
+    "lookaway":  ("看向别处", "移开视线", "转过头去", "别过脸", "转开视线"),
+    "lookdown":  ("低下头", "垂下眼", "垂着眼", "低着头", "垂下眼睛"),
+    "lookleft":  ("看向左边", "望向左侧", "看向左侧"),
+    "lookright": ("看向右边", "望向右侧", "看向右侧"),
+    "lookaround": ("四处看", "环顾四周", "张望", "四处张望"),
+    "think":     ("思考", "想了想", "陷入思考", "沉思", "想了一会"),
+    "fidget":    ("坐立不安", "小动作", "手指绞在一起", "不自然地动了动"),
+    "trouble":   ("为难", "不知所措", "手足无措"),
+    "relief":    ("松了口气", "松了一口气", "放松下来"),
+}
+
+
+def guess_specific_action(text: str) -> Optional[str]:
+    """
+    比 guess_mood_from_text 更精确一层：找具体动作词（点头/摇头/歪头/叹气/
+    揉眼睛……），命中就返回对应的动作片段，交给 MotionPicker.pick_specific
+    直接定位那个动作，而不是从一整个情绪桶里随机抽。没命中返回 None，
+    调用方应回退到情绪桶。
+    """
+    best_kw = None
+    best_hits = 0
+    for kw, phrases in _ACTION_KEYWORDS.items():
+        hits = sum(1 for p in phrases if p in text)
+        if hits > best_hits:
+            best_hits = hits
+            best_kw = kw
+    return best_kw
 
 
 def _generate_motion_map(all_groups: list[str]) -> dict[str, list[str]]:
@@ -308,6 +381,22 @@ class MotionPicker:
             groups = self._all_groups
         return random.choice(groups) if groups else None
 
+    def pick_specific(self, action_keyword: str) -> Optional[str]:
+        """
+        按动作关键片段（比如 "nod"、"sigh"）直接定位一个具体身体动作，而不是
+        从情绪桶随机抽。命名规则跟 _generate_motion_map 一致：group 名去掉最后
+        一段数字/B/C 后缀，剩下部分要等于这个关键片段。没找到返回 None，调用方
+        应回退到情绪桶随机（guess_mood_from_text 那条路）。
+        """
+        import re as _re
+        matches = []
+        for g in self._all_body:
+            tail = g.rsplit("-", 1)[-1]
+            tail_clean = _re.sub(r"\d+$", "", tail).rstrip("B").rstrip("C")
+            if tail_clean == action_keyword:
+                matches.append(g)
+        return random.choice(matches) if matches else None
+
     def available_moods(self) -> list[str]:
         """返回有至少一个动作的情绪列表。"""
         return [m for m, g in self._map.items() if g]
@@ -418,6 +507,12 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
                         break
             if idle_group is not None:
                 self._model.StartMotion(idle_group, 0, _live2d.MotionPriority.IDLE)
+            else:
+                # 这个模型没有专门的 idle 分组，不播动作的话会一直停在默认
+                # 绑定姿势（大字型）。从 neutral 桶随机挑一个动作代替。
+                startup_group = self._picker.pick("neutral")
+                if startup_group:
+                    self._model.StartMotion(startup_group, 0, _live2d.MotionPriority.IDLE)
             # 默认锁一个中性表情；点击/对话会临时切换，待机时保持不变
             default_face = self._picker.pick_face("neutral")
             if default_face:
@@ -515,9 +610,9 @@ class Live2DRenderer(PetRenderer):
                 self._widget.set_fixed_face(face)
 
     def on_click(self, window) -> None:
-        # 戳一戳：身体动作 + 表情都跟着换，互动感更强
-        mood = random.choice(_CLICK_MOODS)
-        self._play_mood(mood, _live2d.MotionPriority.NORMAL, switch_face=True)
+        # 戳一戳先不做动作——等对方真的开口说话（on_message）才让身体/表情跟着换，
+        # 不然戳一下就乱动一次，跟话对不上，比不动更奇怪。
+        pass
 
     def on_idle(self, window) -> None:
         # 待机：只动身体，脸保持不变，不然没人看的时候表情也在乱切很奇怪
@@ -525,9 +620,25 @@ class Live2DRenderer(PetRenderer):
         self._play_mood(mood, _live2d.MotionPriority.IDLE)
 
     def on_message(self, text: str, window) -> None:
-        emotion, _ = parse_emotion_tag(text)
-        mood = emotion if emotion else random.choice(_MESSAGE_MOODS)
-        self._play_mood(mood, _live2d.MotionPriority.NORMAL, switch_face=True)
+        emotion, clean_text = parse_emotion_tag(text)
+        mood = emotion if emotion else guess_mood_from_text(clean_text)
+
+        picker = self._widget.picker()
+        if picker is None:
+            return
+
+        # 先找具体动作词（点头/摇头/歪头/揉眼睛……），命中就直接播这个动作，
+        # 比先归到情绪桶再随机抽更贴文字。没命中的动作词才回退到情绪桶随机。
+        action_kw = None if emotion else guess_specific_action(clean_text)
+        group = picker.pick_specific(action_kw) if action_kw else None
+        if not group:
+            group = picker.pick(mood)
+        if group:
+            self._widget.start_motion(group, _live2d.MotionPriority.NORMAL)
+
+        face = picker.pick_face(mood)
+        if face:
+            self._widget.set_fixed_face(face)
 
     def cleanup(self):
         self._widget.cleanup()
