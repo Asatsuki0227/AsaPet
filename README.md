@@ -23,12 +23,11 @@
 - **主动搭话**（可选）：每 20~60 分钟主动来一句
 - 系统托盘图标，可最小化显示
 
-**AstrBot 集成（可选）**
-- 桌宠可以作为一个 OneBot v11 客户端，反向 WS 连到你的 AstrBot
-- 用 AstrBot 的人格 + 记忆聊天，回复直接冒在桌宠头顶
-- 与 QQ 端 bot（NapCat 等）完全独立，不互相干扰
-- 单击（戳一戳）也能触发 LLM 回应
-- 详见 [AstrBot对接说明.md](AstrBot对接说明.md)
+**AI 对话（可选，两种后端二选一）**
+- **AstrBot**：桌宠作为一个 OneBot v11 客户端，反向 WS 连到你的 AstrBot。用 AstrBot 的人格 + 记忆聊天，与 QQ 端 bot（NapCat 等）完全独立。详见 [AstrBot对接说明.md](AstrBot对接说明.md)
+- **直连 API**（更轻量）：不用部署 AstrBot，填一个 API key 就能聊。支持任何 OpenAI 兼容接口（DeepSeek / Kimi / 智谱 / SiliconFlow / OpenAI 官方等）。人设用结构化 JSON（`persona.json`）配置，右键"编辑人设…"随时改
+- 两者回复都直接冒在桌宠头顶，单击（戳一戳）也能触发回应
+- 右键"对话设置…"随时切换后端
 
 ---
 
@@ -99,6 +98,34 @@ pip install live2d-py
 
 ---
 
+## 启用直连 API 模式（可选，不用装 AstrBot）
+
+如果你只是想让桌宠能聊天，不想折腾 AstrBot 部署，这条路更快：
+
+**1. 拿一个 API key**
+
+任何 OpenAI 兼容的 Chat Completions 接口都行，例如：
+- [DeepSeek](https://platform.deepseek.com/)：`https://api.deepseek.com/v1`，模型名 `deepseek-chat`
+- [Moonshot / Kimi](https://platform.moonshot.cn/)：`https://api.moonshot.cn/v1`，模型名 `moonshot-v1-8k`
+- [智谱 GLM](https://open.bigmodel.cn/)、[SiliconFlow](https://siliconflow.cn/)、OpenAI 官方等同理，换成对应的 Base URL 和模型名即可
+
+**2. 填进设置**
+
+右键 → "对话设置…" → 选"直连 API" → 填 Base URL / API Key → 点"获取"自动拉取该服务商支持的模型列表，下拉选一个 → 确定。如果服务商不支持模型列表接口，也可以直接在模型框里手动输入。
+
+**3.（可选）编辑人设**
+
+右键 → "编辑人设…"，是一个整段粘贴的文本框——直接把你已经写好的完整 system prompt 贴进去就行（比如你在 AstrBot 里用过的那一段），不需要重新拆成字段。保存后立即生效，原样存在项目根目录的 `persona.json` 里，不会被拆分或改写。
+
+**跟 AstrBot 模式的区别**：
+- 不需要单独部署任何服务，配置更简单
+- 没有长期记忆——对话历史只在程序这次运行期间保留，重启就清空；也没有 AstrBot 的插件生态
+- 情绪标签（`[emotion:xxx]`）不是强制的：如果你的 prompt 里约定了它，桌宠会照常解析播放对应 Live2D 动作；不用也完全没问题，只是待机/回复时会随机选一个动作
+
+**API key 安全提醒**：`config.json` 已经在 `.gitignore` 里，不会被提交进仓库，但你自己也别把填了 key 的截图发出去。
+
+---
+
 **仓库里不附带任何角色图片**。你需要自行准备一张 PNG 图（建议已抠除背景），放到项目根目录并命名为 `1.png`。
 
 - 如果你的图片文件名不是 `1.png`，改 `desktop_pet.py` 顶部的 `IMAGE_FILE` 变量即可
@@ -113,11 +140,15 @@ pip install live2d-py
 
 ```json
 {
+  "chat_backend": "astrbot",
   "ws_url": "ws://127.0.0.1:6700",
   "access_token": "",
   "self_id": "10001",
   "user_id": "20001",
   "nickname": "主人",
+  "api_base_url": "",
+  "api_key": "",
+  "api_model": "",
   "idle_animation": true,
   "proactive_chat": false,
   "pet_mode": "image",
@@ -128,11 +159,15 @@ pip install live2d-py
 
 | 字段 | 说明 |
 |---|---|
+| `chat_backend` | 对话后端："astrbot" 或 "direct_api" |
 | `ws_url` | AstrBot 的反向 WS 端点，不用聊天功能就留空 |
 | `access_token` | AstrBot 那边配了 token 就填 |
 | `self_id` | 桌宠模拟的 bot QQ 号，与 NapCat 不能相同 |
 | `user_id` | 桌宠模拟的"你"的 QQ 号，决定 AstrBot 记忆归属 |
 | `nickname` | 角色对你的称呼 |
+| `api_base_url` | 直连 API 模式的 Base URL，例如 `https://api.deepseek.com/v1` |
+| `api_key` | 直连 API 模式的 API key |
+| `api_model` | 直连 API 模式的模型名，例如 `deepseek-chat` |
 | `idle_animation` | 是否开启待机动画（3 分钟空闲后触发） |
 | `proactive_chat` | 是否开启主动搭话（每 20~60 分钟一次） |
 | `pet_mode` | 载体："image" 或 "live2d" |
@@ -157,9 +192,12 @@ pip install live2d-py
 
 ```
 AsaPet/
-├── desktop_pet.py         # 主程序（窗口壳、拖动、菜单、AstrBot 集成）
+├── desktop_pet.py         # 主程序（窗口壳、拖动、菜单、对话后端接入）
 ├── pet_renderer.py        # 渲染层：ImageRenderer / Live2DRenderer + MotionPicker
 ├── character_dialog.py    # "切换角色…" 对话框
+├── ai_chat.py             # 直连 API 客户端 + 人设 prompt 构建
+├── persona_dialog.py      # "编辑人设…" 对话框
+├── persona.json           # 直连 API 模式的人设数据（可编辑）
 ├── AsaPet.spec            # PyInstaller 打包配置
 ├── requirements.txt       # 依赖清单
 ├── AstrBot对接说明.md      # 与 AstrBot 集成的详细说明
@@ -191,8 +229,19 @@ PROACTIVE_MAX_MINUTES = 60             # 主动搭话最大间隔（分钟）
 ```
 
 **Q: 怎么让 LLM 更好地回应"主动搭话"？**
-A: 在 AstrBot 的 system prompt 里加一句：
+A: AstrBot 模式下，在 system prompt 里加一句：
 > 如果收到以 `[系统提示]` 开头的消息，请以你的语气主动说一句简短的话，不要复述系统提示的原文。
+
+直连 API 模式已经内置了同样的约定，不用额外配置。
+
+**Q: 直连 API 模式该填哪个 Base URL？**
+A: 填服务商文档里 Chat Completions 接口的根地址，不带 `/chat/completions` 后缀。比如 DeepSeek 官方文档给的是 `https://api.deepseek.com/v1/chat/completions`，这里只填 `https://api.deepseek.com/v1`。
+
+**Q: 直连 API 报错"请求失败了"？**
+A: 常见原因：Base URL 填错（多/少了斜杠或路径）、API key 无效或欠费、模型名跟服务商不匹配。气泡里会带具体的 HTTP 状态码，可以对着服务商文档排查。
+
+**Q: 点"获取"没拉到模型列表？**
+A: 有的服务商不支持标准的 `/models` 列表接口，或者需要先填对 API key 才有权限查询。这种情况下直接在模型框里手动输入模型名即可，不影响正常聊天。
 
 ---
 

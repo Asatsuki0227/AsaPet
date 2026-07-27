@@ -26,18 +26,22 @@ from PySide6.QtGui import (QPixmap, QPainter, QAction, QCursor, QFont,
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                                QSystemTrayIcon, QLineEdit, QVBoxLayout,
                                QInputDialog, QMessageBox, QDialog,
-                               QFormLayout, QDialogButtonBox, QPushButton)
-from PySide6.QtNetwork import QHostAddress, QNetworkRequest
+                               QFormLayout, QDialogButtonBox, QPushButton,
+                               QRadioButton, QButtonGroup, QComboBox,
+                               QHBoxLayout)
+from PySide6.QtNetwork import QHostAddress, QNetworkRequest, QNetworkAccessManager
 from PySide6.QtWebSockets import QWebSocketServer, QWebSocket
 
 from pet_renderer import (make_renderer, ImageRenderer, PetRenderer,
                           LIVE2D_AVAILABLE)
 from character_dialog import CharacterDialog
 from updater import check_for_update, UpdateDialog
+from ai_chat import DirectAIClient, request_models, parse_models_response
+from persona_dialog import PersonaDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
@@ -276,11 +280,10 @@ class PetWindow(QWidget):
         self._base_pos = self.pos()
         self._base_size = self.size()
 
-        # AstrBot 聊天：OneBot v11 WS 客户端（主动连远程 AstrBot）
-        self._onebot = OneBotClient(self._config, parent=self)
-        self._onebot.reply_received.connect(self._on_bot_reply)
-        self._onebot.connection_changed.connect(self._on_connection_changed)
-        self._onebot.start()
+        # 对话后端：AstrBot（WS）或直连 API，二选一，统一用 self._chat 引用当前生效的客户端
+        self._chat = self._make_chat_client()
+        self._connect_chat_signals()
+        self._chat.start()
 
         # 聊天输入窗口
         self._chat_input = ChatInputWindow()
@@ -343,6 +346,31 @@ class PetWindow(QWidget):
                 duration_ms=6000))
             fallback = img if img else resource_path(IMAGE_FILE)
             return ImageRenderer(fallback, self)
+
+    # ---------- 对话后端（AstrBot / 直连 API） ----------
+    def _make_chat_client(self):
+        """按 config 的 chat_backend 创建对话客户端。两者接口对齐，调用处不用分支。"""
+        backend = self._config.get("chat_backend", "astrbot")
+        if backend == "direct_api":
+            return DirectAIClient(self._config, parent=self)
+        return OneBotClient(self._config, parent=self)
+
+    def _connect_chat_signals(self):
+        self._chat.reply_received.connect(self._on_bot_reply)
+        if hasattr(self._chat, "connection_changed"):
+            self._chat.connection_changed.connect(self._on_connection_changed)
+        if hasattr(self._chat, "error_occurred"):
+            self._chat.error_occurred.connect(self._on_chat_error)
+
+    def _swap_chat_client(self):
+        """切换对话后端（AstrBot ↔ 直连 API）：停旧建新。"""
+        self._chat.stop()
+        self._chat = self._make_chat_client()
+        self._connect_chat_signals()
+        self._chat.start()
+
+    def _on_chat_error(self, message: str):
+        self._show_bubble(message)
 
     def _apply_pet_size(self):
         """按当前 pet_height 让 renderer 重排显示。renderer 自己会 resize 窗口。"""
@@ -499,23 +527,36 @@ class PetWindow(QWidget):
 
         menu.addSeparator()
 
-        # AstrBot 聊天
-        chat_status = "已连接" if self._onebot.connected else "未连接"
-        chat_act = QAction(f"和奏聊天…（AstrBot：{chat_status}）", self)
+        # 聊天：后端是 AstrBot 还是直连 API，菜单文案跟着换
+        backend = self._config.get("chat_backend", "astrbot")
+        backend_label = "AstrBot" if backend == "astrbot" else "直连API"
+        chat_status = "已连接" if self._chat.connected else (
+            "未连接" if backend == "astrbot" else "未配置")
+        chat_act = QAction(f"和奏聊天…（{backend_label}：{chat_status}）", self)
         chat_act.triggered.connect(self._toggle_chat_input)
         menu.addAction(chat_act)
 
-        info_act = QAction(f"WS 地址：{self._config.get('ws_url','')}", self)
-        info_act.setEnabled(False)
-        menu.addAction(info_act)
+        if backend == "astrbot":
+            info_act = QAction(f"WS 地址：{self._config.get('ws_url','')}", self)
+            info_act.setEnabled(False)
+            menu.addAction(info_act)
+        else:
+            info_act = QAction(f"模型：{self._config.get('api_model','（未设置）')}", self)
+            info_act.setEnabled(False)
+            menu.addAction(info_act)
 
-        settings_act = QAction("AstrBot 连接设置…", self)
+        settings_act = QAction("对话设置…", self)
         settings_act.triggered.connect(self._open_settings)
         menu.addAction(settings_act)
 
-        reconnect_act = QAction("重新连接 AstrBot", self)
-        reconnect_act.triggered.connect(self._reconnect_bot)
-        menu.addAction(reconnect_act)
+        if backend == "astrbot":
+            reconnect_act = QAction("重新连接 AstrBot", self)
+            reconnect_act.triggered.connect(self._reconnect_bot)
+            menu.addAction(reconnect_act)
+        else:
+            persona_act = QAction("编辑人设…", self)
+            persona_act.triggered.connect(self._open_persona_dialog)
+            menu.addAction(persona_act)
 
         menu.addSeparator()
 
@@ -598,12 +639,12 @@ class PetWindow(QWidget):
         """单击释放的顶层反应：委托给渲染层做动画/动作，同时发 poke/兜底气泡。"""
         self._renderer.on_click(self)
 
-        # 戳一戳：优先发 poke 事件给 AstrBot；连不上时 fallback 到本地台词
-        if self._onebot.connected:
-            ok = self._onebot.send_poke_event()
+        # 戳一戳：优先发 poke 事件给对话后端；连不上/未配置时 fallback 到本地台词
+        if self._chat.connected:
+            ok = self._chat.send_poke_event()
             if not ok:
                 self._show_random_bubble()
-            # 否则等 AstrBot 通过 _on_bot_reply 回消息
+            # 否则等对话后端通过 _on_bot_reply 回消息
         else:
             self._show_random_bubble()
 
@@ -645,17 +686,21 @@ class PetWindow(QWidget):
 
     def _on_user_send(self, text: str):
         """用户在输入框按回车发送消息"""
-        if not self._onebot.connected:
-            self._show_bubble(
-                "……还没连上 AstrBot 呢。请检查 WS 地址：\n"
-                f"{self._config.get('ws_url','')}"
-            )
+        if not self._chat.connected:
+            backend = self._config.get("chat_backend", "astrbot")
+            if backend == "astrbot":
+                self._show_bubble(
+                    "……还没连上 AstrBot 呢。请检查 WS 地址：\n"
+                    f"{self._config.get('ws_url','')}"
+                )
+            else:
+                self._show_bubble("……还没配置 API key 呢，去「对话设置…」里填一下吧。")
             return
-        self._onebot.send_user_message(text)
+        self._chat.send_user_message(text)
         # 不弹"让我想想"，安静等待回复
 
     def _on_bot_reply(self, text: str):
-        """AstrBot 回复到达，显示在气泡里"""
+        """对话后端回复到达，显示在气泡里"""
         if not text:
             return
         from pet_renderer import parse_emotion_tag
@@ -665,24 +710,35 @@ class PetWindow(QWidget):
         self._renderer.on_message(text, self)
 
     def _on_connection_changed(self, connected: bool):
-        """WS 连接状态变化"""
+        """WS 连接状态变化（仅 AstrBot 后端会触发）"""
         if connected:
             self._show_bubble("……嗯，连上了。", duration_ms=1800)
         # 断开时不打扰，静默重连
 
     def _open_settings(self):
-        dlg = SettingsDialog(self._config, self)
+        dlg = ChatSettingsDialog(self._config, self)
         if dlg.exec() == QDialog.Accepted:
             new_cfg = dlg.get_config()
+            old_backend = self._config.get("chat_backend", "astrbot")
             self._config = new_cfg
             save_config(new_cfg)
-            self._onebot.update_config(new_cfg)
-            self._show_bubble("……好，我去重新连一下。", duration_ms=2000)
+            if new_cfg.get("chat_backend", "astrbot") != old_backend:
+                self._swap_chat_client()
+            else:
+                self._chat.update_config(new_cfg)
+            self._show_bubble("……好，设置更新好了。", duration_ms=2000)
 
     def _reconnect_bot(self):
-        self._onebot.stop()
-        QTimer.singleShot(300, self._onebot.start)
+        self._chat.stop()
+        QTimer.singleShot(300, self._chat.start)
         self._show_bubble("……嗯，我再试试。", duration_ms=1500)
+
+    def _open_persona_dialog(self):
+        dlg = PersonaDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            if hasattr(self._chat, "reload_persona"):
+                self._chat.reload_persona()
+            self._show_bubble("……嗯，我记住了。", duration_ms=1800)
 
     # ---------- 切换角色（图片 / Live2D） ----------
     def _open_character_dialog(self):
@@ -917,12 +973,13 @@ class PetWindow(QWidget):
             self._proactive_timer.start(60 * 1000)
             return
 
-        if self._onebot.connected:
+        if self._chat.connected:
             # 给 LLM 的"暗号"提示词：告诉它"该主动搭话了"
-            # AstrBot 侧的 system prompt 里可以约定：收到这个字符串就主动说一句话
+            # AstrBot 侧的 system prompt（或直连模式的人设 prompt）里可以约定：
+            # 收到这个字符串就主动说一句话
             nickname = self._config.get("nickname", "诶嘿")
             hint = f"[系统提示]距离上次对话已过去一段时间，请你（奏）主动对{nickname}说一句简短温柔的话，不要重复以前说过的内容。"
-            self._onebot.send_user_message(hint)
+            self._chat.send_user_message(hint)
         else:
             # 离线：直接来一句本地独白
             raw = random.choice(IDLE_DIALOGUES)
@@ -1164,11 +1221,17 @@ def config_path() -> str:
 
 
 DEFAULT_CONFIG = {
+    # 对话后端：AstrBot（走 WS，需要单独部署）或直连 API（只需 API key）
+    "chat_backend": "astrbot",         # "astrbot" | "direct_api"
     "ws_url": "ws://127.0.0.1:6700",   # AstrBot 反向 WS 端点（改成你 AstrBot 主机的地址）
     "access_token": "",                # 如果 AstrBot 配置了 token 就填
     "self_id": "10001",                # 桌宠模拟的 bot QQ 号（跟 NapCat 那个不能相同）
     "user_id": "20001",                # 桌宠模拟的你的 QQ 号（区分会话记忆）
     "nickname": "诶嘿",                # 奏对你的称呼
+    # 直连 API（OpenAI 兼容接口，如 DeepSeek / Kimi / 智谱 / SiliconFlow / OpenAI 官方）
+    "api_base_url": "",                # 例如 https://api.deepseek.com/v1
+    "api_key": "",
+    "api_model": "",                   # 例如 deepseek-chat
     # 载体：图片 or Live2D
     "pet_mode": "image",               # "image" | "live2d"
     "image_path": "",                  # 空 → 用内置 1.png
@@ -1443,14 +1506,36 @@ class OneBotClient(QObject):
             self.reply_received.emit(reply_text.strip())
 
 
-# -------------------- 设置对话框 --------------------
-class SettingsDialog(QDialog):
+# -------------------- 对话设置对话框 --------------------
+class ChatSettingsDialog(QDialog):
+    """
+    对话后端设置：AstrBot（WS）或直连 API，二选一。
+
+    get_config() 返回的是「完整配置的拷贝 + 编辑过的字段」，不是只有本对话框
+    涉及的那几个字段——否则保存时会把 pet_mode/image_path 等其他配置项冲掉。
+    """
+
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AstrBot 连接设置")
+        self._base_config = dict(config)
+        self.setWindowTitle("对话设置")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.resize(420, 200)
+        self.resize(460, 380)
 
+        self._radio_astrbot = QRadioButton("AstrBot（需要单独部署，支持长期记忆/插件）")
+        self._radio_direct = QRadioButton("直连 API（只需一个 API key，更轻量）")
+        group = QButtonGroup(self)
+        group.addButton(self._radio_astrbot)
+        group.addButton(self._radio_direct)
+        if config.get("chat_backend", "astrbot") == "direct_api":
+            self._radio_direct.setChecked(True)
+        else:
+            self._radio_astrbot.setChecked(True)
+
+        self._nickname = QLineEdit(str(config.get("nickname", "诶嘿")))
+        self._nickname.setPlaceholderText("奏对你的称呼（例如：诶嘿、老师、主人）")
+
+        # AstrBot 分支的字段
         self._url = QLineEdit(config.get("ws_url", ""))
         self._url.setPlaceholderText("ws://AstrBot主机IP:端口   （例如 ws://192.168.1.10:6700）")
         self._token = QLineEdit(config.get("access_token", ""))
@@ -1459,15 +1544,58 @@ class SettingsDialog(QDialog):
         self._self_id.setPlaceholderText("桌宠模拟的 bot QQ 号（不能与 NapCat 相同）")
         self._user_id = QLineEdit(str(config.get("user_id", "20001")))
         self._user_id.setPlaceholderText("桌宠模拟的你自己的 QQ 号（区分记忆会话）")
-        self._nickname = QLineEdit(str(config.get("nickname", "诶嘿")))
-        self._nickname.setPlaceholderText("奏对你的称呼（例如：诶嘿、老师、主人）")
 
-        form = QFormLayout()
-        form.addRow("WS 地址", self._url)
-        form.addRow("Access Token", self._token)
-        form.addRow("Bot QQ 号", self._self_id)
-        form.addRow("用户 QQ 号", self._user_id)
-        form.addRow("你的昵称", self._nickname)
+        astrbot_form = QFormLayout()
+        astrbot_form.addRow("WS 地址", self._url)
+        astrbot_form.addRow("Access Token", self._token)
+        astrbot_form.addRow("Bot QQ 号", self._self_id)
+        astrbot_form.addRow("用户 QQ 号", self._user_id)
+        self._astrbot_group = QWidget()
+        self._astrbot_group.setLayout(astrbot_form)
+
+        # 直连 API 分支的字段
+        self._api_base_url = QLineEdit(config.get("api_base_url", ""))
+        self._api_base_url.setPlaceholderText("例如 https://api.deepseek.com/v1")
+        self._api_key = QLineEdit(config.get("api_key", ""))
+        self._api_key.setEchoMode(QLineEdit.Password)
+        self._api_key.setPlaceholderText("从服务商后台获取的 API key")
+
+        # 模型选择：可编辑下拉框 + "获取模型" 按钮
+        self._api_model = QComboBox()
+        self._api_model.setEditable(True)
+        saved_model = config.get("api_model", "")
+        if saved_model:
+            self._api_model.addItem(saved_model)
+            self._api_model.setCurrentText(saved_model)
+        self._api_model.lineEdit().setPlaceholderText("例如 deepseek-chat，或点「获取」自动拉取")
+        self._fetch_btn = QPushButton("获取")
+        self._fetch_btn.setFixedWidth(48)
+        self._fetch_btn.setToolTip("从服务商 /models 接口获取可用模型列表")
+        self._fetch_btn.clicked.connect(self._fetch_models)
+        self._manager = QNetworkAccessManager(self)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(self._api_model, 1)
+        model_row.addWidget(self._fetch_btn)
+        model_widget = QWidget()
+        model_widget.setLayout(model_row)
+
+        direct_form = QFormLayout()
+        direct_form.addRow("Base URL", self._api_base_url)
+        direct_form.addRow("API Key", self._api_key)
+        direct_form.addRow("模型", model_widget)
+        self._direct_group = QWidget()
+        self._direct_group.setLayout(direct_form)
+
+        self._radio_astrbot.toggled.connect(self._update_visible_group)
+        self._update_visible_group()
+
+        note = QLabel(
+            "· 直连 API 支持任何 OpenAI 兼容接口（DeepSeek / Kimi / 智谱 / SiliconFlow / OpenAI 官方等）。\n"
+            "· 直连模式没有长期记忆，重启程序后对话历史会清空；人设可通过右键「编辑人设…」调整。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #666; font-size: 11px;")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -1475,18 +1603,66 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
+        top_form = QFormLayout()
+        top_form.addRow("你的昵称", self._nickname)
+
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(self._radio_astrbot)
+        layout.addWidget(self._radio_direct)
+        layout.addLayout(top_form)
+        layout.addWidget(self._astrbot_group)
+        layout.addWidget(self._direct_group)
+        layout.addWidget(note)
         layout.addWidget(buttons)
 
+    def _update_visible_group(self):
+        is_astrbot = self._radio_astrbot.isChecked()
+        self._astrbot_group.setVisible(is_astrbot)
+        self._direct_group.setVisible(not is_astrbot)
+
+    def _fetch_models(self):
+        base_url = self._api_base_url.text().strip()
+        api_key = self._api_key.text().strip()
+        if not base_url:
+            QMessageBox.warning(self, "获取模型", "先填一下 Base URL 吧。")
+            return
+
+        self._fetch_btn.setEnabled(False)
+        self._fetch_btn.setText("…")
+        reply = request_models(self._manager, base_url, api_key)
+        reply.finished.connect(lambda: self._on_models_fetched(reply))
+
+    def _on_models_fetched(self, reply):
+        self._fetch_btn.setEnabled(True)
+        self._fetch_btn.setText("获取")
+        ids, error = parse_models_response(reply)
+        reply.deleteLater()
+        if error:
+            QMessageBox.warning(self, "获取模型", f"……{error}")
+            return
+
+        current = self._api_model.currentText().strip()
+        self._api_model.clear()
+        self._api_model.addItems(ids)
+        if current and current in ids:
+            self._api_model.setCurrentText(current)
+        elif current:
+            # 服务商没返回这个模型名，但用户手动填过——保留，别帮他删掉
+            self._api_model.insertItem(0, current)
+            self._api_model.setCurrentIndex(0)
+
     def get_config(self) -> dict:
-        return {
-            "ws_url": self._url.text().strip(),
-            "access_token": self._token.text().strip(),
-            "self_id": self._self_id.text().strip() or "10001",
-            "user_id": self._user_id.text().strip() or "20001",
-            "nickname": self._nickname.text().strip() or "诶嘿",
-        }
+        cfg = dict(self._base_config)
+        cfg["chat_backend"] = "direct_api" if self._radio_direct.isChecked() else "astrbot"
+        cfg["nickname"] = self._nickname.text().strip() or "诶嘿"
+        cfg["ws_url"] = self._url.text().strip()
+        cfg["access_token"] = self._token.text().strip()
+        cfg["self_id"] = self._self_id.text().strip() or "10001"
+        cfg["user_id"] = self._user_id.text().strip() or "20001"
+        cfg["api_base_url"] = self._api_base_url.text().strip()
+        cfg["api_key"] = self._api_key.text().strip()
+        cfg["api_model"] = self._api_model.currentText().strip()
+        return cfg
 
 
 # -------------------- 聊天输入窗口 --------------------

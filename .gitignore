@@ -24,6 +24,10 @@ ChattyPet.spec
 config.json
 dist/config.json
 
+# 用户本地人设（可能包含真实姓名/QQ号等个人信息，不入仓库；仓库里用 persona.example.json）
+persona.json
+dist/persona.json
+
 # 日志
 *.log
 build_log.txt
