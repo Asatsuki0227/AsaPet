@@ -89,6 +89,12 @@ pip install live2d-py
 
 **动作映射**：程序会读模型的 motion group 名字，按前缀分桶（happy / sad / angry / shy / sleepy / tease / curious / neutral），单击时随机播一个「身体动作 + 表情动作」组合，待机时播小幅动作。如果你的模型不用 Project Sekai 那套 `w-*` / `face_*` 命名，代码会静默降级到"随便播一个"——想要更精细的映射可以改 `pet_renderer.py` 里的 `_MOOD_BUCKETS`。
 
+**情绪标签**：程序支持通过 `[emotion:xxx]` 标签触发对应情绪的动作。标签格式为 `[emotion:happy]`、`[emotion:sad]` 等（也支持 `[表情:xxx]`），可用的情绪有：`happy`、`sad`、`angry`、`shy`、`sleepy`、`tease`、`curious`、`neutral`。
+
+- **AstrBot 回复**：如果你的 LLM system prompt 里约定了在回复中带 `[emotion:xxx]` 标签，桌宠会自动解析并播放对应动作，气泡里只显示去掉标签后的文本。
+- **固定台词**：`desktop_pet.py` 顶部的 `DIALOGUES` / `IDLE_DIALOGUES` 列表里的台词也可以带 `[emotion:xxx]` 前缀来指定情绪。如果你想自定义台词，在句子前加上标签即可，例如 `"[emotion:happy]……谢谢你。"`。不加标签也能用，只是会随机选情绪。
+- **motion_map.json**：首次加载 Live2D 模型时，程序会在模型目录下自动生成 `motion_map.json`，里面是每个情绪对应哪些动作组的映射。你可以手动编辑这个文件来调整映射关系——比如让 `"happy"` 触发你模型里特定的几个 motion group。
+
 **授权提醒**：Live2D Cubism SDK 商用有独立授权条款，个人非商用免费。详见 [Live2D 官方](https://www.live2d.com/en/download/cubism-sdk/release-license/)。
 
 ---

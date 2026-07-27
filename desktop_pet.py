@@ -37,7 +37,7 @@ from updater import check_for_update, UpdateDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
@@ -58,43 +58,43 @@ PROACTIVE_MAX_MINUTES = 60          # 主动搭话最大间隔（分钟）
 # 宵崎奏（ヨイサキ カナデ）风格台词
 # 特点：轻声细语、常带省略号、内向敏感、把作曲/救赎挂在心上、偶尔提到 MEIKO 姐姐
 DIALOGUES = [
-    "……嗯？",
-    "……你好。",
-    "对不起……打扰到你了吗？",
-    "……请让我再写一会儿曲子。",
-    "我……还差一点点就能完成了。",
-    "如果这首歌，能拯救某个人就好了……",
-    "……谢谢你，愿意来看我。",
-    "别担心我……我没事的。",
-    "……熬夜对身体不好哦。",
-    "……你也，要好好休息。",
-    "键盘的声音……让人安心呢。",
-    "……有你在，稍微能安心一点。",
-    "对不起,我……又走神了。",
-    "……这段旋律，你觉得怎么样？",
-    "……嗯，我在听。",
-    "只要还能写下去，就没关系……",
-    "……绘名她们，一定在等我。",
-    "对不起,让你担心了……",
-    "……请不要离开哦。",
-    "……可以陪我一会儿吗？",
-    "只要，还有人需要这首歌……",
+    "[emotion:curious]……嗯？",
+    "[emotion:neutral]……你好。",
+    "[emotion:shy]对不起……打扰到你了吗？",
+    "[emotion:neutral]……请让我再写一会儿曲子。",
+    "[emotion:happy]我……还差一点点就能完成了。",
+    "[emotion:sad]如果这首歌，能拯救某个人就好了……",
+    "[emotion:happy]……谢谢你，愿意来看我。",
+    "[emotion:sad]别担心我……我没事的。",
+    "[emotion:neutral]……熬夜对身体不好哦。",
+    "[emotion:neutral]……你也，要好好休息。",
+    "[emotion:happy]键盘的声音……让人安心呢。",
+    "[emotion:happy]……有你在，稍微能安心一点。",
+    "[emotion:shy]对不起,我……又走神了。",
+    "[emotion:curious]……这段旋律，你觉得怎么样？",
+    "[emotion:neutral]……嗯，我在听。",
+    "[emotion:neutral]只要还能写下去，就没关系……",
+    "[emotion:sad]……绘名她们，一定在等我。",
+    "[emotion:shy]对不起,让你担心了……",
+    "[emotion:sad]……请不要离开哦。",
+    "[emotion:shy]……可以陪我一会儿吗？",
+    "[emotion:neutral]只要，还有人需要这首歌……",
 ]
 
 # 待机时的独白台词（更内向、更像自言自语）
 IDLE_DIALOGUES = [
-    "……好安静。",
-    "……嗯，这段旋律再改一下……",
-    "……你还在吗？",
-    "……不知不觉，就这个点了。",
-    "……偶尔发呆一下，也没关系吧。",
-    "……啊，走神了。",
-    "……绘名，最近还好吗。",
-    "……继续，再一点点就好。",
-    "……窗外的风，好像变了。",
-    "……你不说话，我也不打扰。",
-    "……时间过得，好快啊。",
-    "……嗯，先记下来吧。",
+    "[emotion:neutral]……好安静。",
+    "[emotion:curious]……嗯，这段旋律再改一下……",
+    "[emotion:curious]……你还在吗？",
+    "[emotion:neutral]……不知不觉，就这个点了。",
+    "[emotion:sleepy]……偶尔发呆一下，也没关系吧。",
+    "[emotion:sleepy]……啊，走神了。",
+    "[emotion:sad]……绘名，最近还好吗。",
+    "[emotion:neutral]……继续，再一点点就好。",
+    "[emotion:neutral]……窗外的风，好像变了。",
+    "[emotion:neutral]……你不说话，我也不打扰。",
+    "[emotion:sleepy]……时间过得，好快啊。",
+    "[emotion:neutral]……嗯，先记下来吧。",
 ]
 
 
@@ -620,10 +620,13 @@ class PetWindow(QWidget):
         action()
 
     def _show_random_bubble(self):
-        text = random.choice(DIALOGUES)
-        # 锚点：角色窗口顶部中心（全局坐标）
+        raw = random.choice(DIALOGUES)
+        from pet_renderer import parse_emotion_tag
+        emotion, text = parse_emotion_tag(raw)
         anchor = self.mapToGlobal(QPoint(self.width() // 2, 0))
         self._bubble.show_text(text, anchor)
+        if emotion:
+            self._renderer.on_message(raw, self)
 
     def _show_bubble(self, text: str, duration_ms: int = None):
         """在气泡里显示指定文本；根据文字长度自动延长显示时间"""
@@ -655,8 +658,10 @@ class PetWindow(QWidget):
         """AstrBot 回复到达，显示在气泡里"""
         if not text:
             return
-        self._show_bubble(text)
-        # 让渲染层做个"回话"反应（Live2D 会播 happy/curious/neutral 之一）
+        from pet_renderer import parse_emotion_tag
+        _, clean_text = parse_emotion_tag(text)
+        self._show_bubble(clean_text)
+        # 让渲染层做个"回话"反应（Live2D 会播对应情绪动作）
         self._renderer.on_message(text, self)
 
     def _on_connection_changed(self, connected: bool):
@@ -770,8 +775,12 @@ class PetWindow(QWidget):
 
         # 有一定概率冒个独白气泡（不依赖具体载体）
         if random.random() < IDLE_BUBBLE_CHANCE:
-            text = random.choice(IDLE_DIALOGUES)
-            self._show_bubble(text, duration_ms=2500)
+            raw = random.choice(IDLE_DIALOGUES)
+            from pet_renderer import parse_emotion_tag
+            emotion, clean = parse_emotion_tag(raw)
+            self._show_bubble(clean, duration_ms=2500)
+            if emotion:
+                self._renderer.on_message(raw, self)
 
         # 再等一段随机时间做下一次待机
         next_delay = random.randint(IDLE_INTERVAL_MIN_MS, IDLE_INTERVAL_MAX_MS)
@@ -916,8 +925,12 @@ class PetWindow(QWidget):
             self._onebot.send_user_message(hint)
         else:
             # 离线：直接来一句本地独白
-            text = random.choice(IDLE_DIALOGUES)
-            self._show_bubble(text, duration_ms=3000)
+            raw = random.choice(IDLE_DIALOGUES)
+            from pet_renderer import parse_emotion_tag
+            emotion, clean = parse_emotion_tag(raw)
+            self._show_bubble(clean, duration_ms=3000)
+            if emotion:
+                self._renderer.on_message(raw, self)
 
         # 安排下一次
         self._schedule_proactive()
