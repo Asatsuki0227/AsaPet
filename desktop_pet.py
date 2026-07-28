@@ -41,7 +41,7 @@ from persona_dialog import PersonaDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.2.2"
+VERSION = "1.2.1"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
@@ -233,7 +233,6 @@ class PetWindow(QWidget):
         self._renderer.natural_size_changed.connect(
             self._on_renderer_natural_size_changed)
         self._renderer.tray_icon_changed.connect(self._refresh_tray_icon)
-        self._renderer.mask_updated.connect(self._on_mask_updated)
         self._apply_pet_size()
 
         # 定位到屏幕右下角
@@ -389,17 +388,6 @@ class PetWindow(QWidget):
         self._renderer.layout_for_size(new_size)
         self._base_size = QSize(new_size.width(), new_size.height())
         self._base_pos = self.pos()
-
-    def _on_mask_updated(self, region):
-        """
-        renderer 算好透明区域遮罩后调这个：让窗口只在画到角色的地方接收鼠标，
-        其余透明区域直接穿透到桌面，不会白挡一片空气。region 为 None 时清掉遮罩
-        （整个矩形都能点，比如 Live2D 模式还没算出第一次遮罩前的兜底状态）。
-        """
-        if region is None:
-            self.clearMask()
-        else:
-            self.setMask(region)
 
     def _refresh_tray_icon(self):
         """renderer 通知托盘图标变了（或切换角色时）。回落顺序：renderer → 1.png → app.ico"""
@@ -790,10 +778,6 @@ class PetWindow(QWidget):
             self._renderer.tray_icon_changed.disconnect(self._refresh_tray_icon)
         except (TypeError, RuntimeError):
             pass
-        try:
-            self._renderer.mask_updated.disconnect(self._on_mask_updated)
-        except (TypeError, RuntimeError):
-            pass
         old_widget = self._renderer.widget()
         self._renderer.cleanup()
         if old_widget is not None:
@@ -801,16 +785,11 @@ class PetWindow(QWidget):
             old_widget.setParent(None)
             old_widget.deleteLater()
 
-        # 新 renderer 还没设过遮罩前，先清掉旧的，别让上一个角色的透明区域形状
-        # 继续挡在这里
-        self.clearMask()
-
         # 建新 renderer；失败时 _make_renderer_from_config 会自动回退到图片
         self._renderer = self._make_renderer_from_config()
         self._renderer.natural_size_changed.connect(
             self._on_renderer_natural_size_changed)
         self._renderer.tray_icon_changed.connect(self._refresh_tray_icon)
-        self._renderer.mask_updated.connect(self._on_mask_updated)
         self._physics_enabled = (self._config.get("pet_mode", "image") == "image")
         self._apply_pet_size()
         self._renderer.widget().show()

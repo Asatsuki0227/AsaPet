@@ -20,7 +20,7 @@ import random
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
-from PySide6.QtGui import QBitmap, QIcon, QImage, QPixmap, QRegion
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
 # live2d-py 是可选依赖：图片模式下不需要
@@ -46,7 +46,6 @@ class PetRenderer(QObject):
     """
     natural_size_changed = Signal()
     tray_icon_changed = Signal()
-    mask_updated = Signal(object)  # QRegion 或 None（None＝不设遮罩，整个矩形可点）
 
     def widget(self) -> QWidget:
         raise NotImplementedError
@@ -74,20 +73,6 @@ class PetRenderer(QObject):
 
     def cleanup(self) -> None:
         pass
-
-
-def _mask_from_pixmap(pix: QPixmap) -> QRegion:
-    """
-    按 alpha 通道把整张图转成一个窗口遮罩：只有画到东西的地方接收鼠标，
-    完全透明的地方直接穿透到桌面下面的窗口，不会白挡一片空气。
-    createAlphaMask() 是 Qt 自带的按透明度生成 1bpp 蒙版的方法，C++ 实现，
-    比手动逐像素扫要快得多。
-    """
-    img = pix.toImage()
-    # ThresholdAlphaDither：硬阈值二值化，不抖动——否则半透明边缘会被抖成
-    # 蜂窝状的可点/不可点噪点，摸上去边缘会一格一格地漏鼠标事件。
-    mask_img = img.createAlphaMask(Qt.ThresholdAlphaDither)
-    return QRegion(QBitmap.fromImage(mask_img))
 
 
 # --------------------------- 图片模式 ---------------------------
@@ -120,9 +105,6 @@ class ImageRenderer(PetRenderer):
         )
         self._label.setPixmap(self._scaled)
         self._label.setGeometry(0, 0, w, h)
-        # 窗口本身是个 w×h 的矩形，但图片透明区域不该拦鼠标——按 alpha
-        # 通道生成遮罩，只让画到角色的地方接收点击，其余穿透到桌面。
-        self.mask_updated.emit(_mask_from_pixmap(self._scaled))
 
     def set_display_height(self, h: int) -> QSize:
         size = self.natural_size_for_height(h)
@@ -425,12 +407,8 @@ class MotionPicker:
         return random.choice(faces) if faces else None
 
 
-_MASK_REFRESH_MS = 400  # Live2D 遮罩重算间隔：够跟上姿态变化，又不至于每帧都截图拖累帧率
-
-
 class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
     model_ready = Signal(float)
-    mask_ready = Signal(object)  # 定期从画面重算出的 QRegion
 
     def __init__(self, model_json_path: str, parent: Optional[QWidget] = None):
         if not LIVE2D_AVAILABLE:
@@ -451,11 +429,6 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self.update)
-        # 角色会动，透明区域的形状跟着变——不追求逐帧精确（那样开销太大），
-        # 定期从当前画面重算一次遮罩就够用了。
-        self._mask_timer = QTimer(self)
-        self._mask_timer.setInterval(_MASK_REFRESH_MS)
-        self._mask_timer.timeout.connect(self._refresh_mask)
 
     def picker(self) -> Optional[MotionPicker]:
         return self._picker
@@ -554,7 +527,6 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
             if self._pending_face:
                 pending, self._pending_face = self._pending_face, None
                 self.set_fixed_face(pending)
-            self._mask_timer.start()
 
     def resizeGL(self, w: int, h: int):
         if self._model is not None:
@@ -577,25 +549,8 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
             except Exception as e:
                 print(f"[Live2D] draw failed: {e}")
 
-    def _refresh_mask(self):
-        """从当前渐染画面截一帧算透明区域，发给 Live2DRenderer 转发给窗口。"""
-        if self._model is None:
-            return
-        try:
-            img = self.grabFramebuffer()  # 带 alpha 通道（顶层设了 setAlphaBufferSize(8)）
-            # grabFramebuffer() 按物理像素返回（高 DPI 屏下是逻辑尺寸的 devicePixelRatio 倍），
-            # 但 setMask() 吃的 QRegion 是逻辑坐标——不缩回逻辑尺寸的话，高 DPI 屏上遮罩
-            # 只会盖住左上角一小块，角色本体全被当成"没画东西"给穿透掉。
-            if img.size() != self.size():
-                img = img.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            mask_img = img.createAlphaMask(Qt.ThresholdAlphaDither)
-            self.mask_ready.emit(QRegion(QBitmap.fromImage(mask_img)))
-        except Exception as e:
-            print(f"[Live2D] mask refresh failed: {e}")
-
     def cleanup(self):
         self._timer.stop()
-        self._mask_timer.stop()
 
 
 class Live2DRenderer(PetRenderer):
@@ -616,7 +571,6 @@ class Live2DRenderer(PetRenderer):
         self._parent_widget = parent_widget
         self._widget = Live2DGLWidget(model_json_path, parent_widget)
         self._widget.model_ready.connect(self._on_model_ready)
-        self._widget.mask_ready.connect(self.mask_updated.emit)
         self._tray_icon = QIcon()
         self._aspect = 0.75
 
