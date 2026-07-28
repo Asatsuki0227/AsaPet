@@ -583,6 +583,11 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
             return
         try:
             img = self.grabFramebuffer()  # 带 alpha 通道（顶层设了 setAlphaBufferSize(8)）
+            # grabFramebuffer() 按物理像素返回（高 DPI 屏下是逻辑尺寸的 devicePixelRatio 倍），
+            # 但 setMask() 吃的 QRegion 是逻辑坐标——不缩回逻辑尺寸的话，高 DPI 屏上遮罩
+            # 只会盖住左上角一小块，角色本体全被当成"没画东西"给穿透掉。
+            if img.size() != self.size():
+                img = img.scaled(self.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             mask_img = img.createAlphaMask(Qt.ThresholdAlphaDither)
             self.mask_ready.emit(QRegion(QBitmap.fromImage(mask_img)))
         except Exception as e:
