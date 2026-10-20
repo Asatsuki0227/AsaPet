@@ -42,7 +42,7 @@ from motion_editor_dialog import MotionEditorDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
