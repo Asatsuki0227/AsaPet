@@ -68,7 +68,7 @@ class PetRenderer(QObject):
     def on_idle(self, window) -> None:
         pass
 
-    def on_message(self, text: str, window) -> None:
+    def on_message(self, text: str, window, pick_body: bool = True) -> None:
         pass
 
     def cleanup(self) -> None:
@@ -638,6 +638,22 @@ class Live2DRenderer(PetRenderer):
 
     def test_play(self, group: str) -> None:
         """编辑界面里点"试播"用：直接按组名播放一个身体动作，不经过情绪桶随机。"""
+        self.play_action(group)
+
+    def get_available_actions(self) -> list[str]:
+        """给 AI 自主选动作用：精简后（motion_map 里实际保留）的身体动作名去重列表。"""
+        picker = self._widget.picker()
+        if picker is None:
+            return []
+        names = set()
+        for groups in picker.get_map().values():
+            for g in groups:
+                if g.startswith("w-"):
+                    names.add(g)
+        return sorted(names)
+
+    def play_action(self, group: str) -> None:
+        """AI 主动选中一个动作后调用：直接播放，不经过情绪桶随机。"""
         self._widget.start_motion(group, _live2d.MotionPriority.FORCE)
 
     def _play_mood(self, mood: str, priority: int, switch_face: bool = False):
@@ -662,7 +678,7 @@ class Live2DRenderer(PetRenderer):
         mood = random.choice(_IDLE_MOODS)
         self._play_mood(mood, _live2d.MotionPriority.IDLE)
 
-    def on_message(self, text: str, window) -> None:
+    def on_message(self, text: str, window, pick_body: bool = True) -> None:
         emotion, clean_text = parse_emotion_tag(text)
         mood = emotion if emotion else guess_mood_from_text(clean_text)
 
@@ -670,14 +686,15 @@ class Live2DRenderer(PetRenderer):
         if picker is None:
             return
 
-        # 先找具体动作词（点头/摇头/歪头/揉眼睛……），命中就直接播这个动作，
-        # 比先归到情绪桶再随机抽更贴文字。没命中的动作词才回退到情绪桶随机。
-        action_kw = None if emotion else guess_specific_action(clean_text)
-        group = picker.pick_specific(action_kw) if action_kw else None
-        if not group:
-            group = picker.pick(mood)
-        if group:
-            self._widget.start_motion(group, _live2d.MotionPriority.NORMAL)
+        if pick_body:
+            # 先找具体动作词（点头/摇头/歪头/揉眼睛……），命中就直接播这个动作，
+            # 比先归到情绪桶再随机抽更贴文字。没命中的动作词才回退到情绪桶随机。
+            action_kw = None if emotion else guess_specific_action(clean_text)
+            group = picker.pick_specific(action_kw) if action_kw else None
+            if not group:
+                group = picker.pick(mood)
+            if group:
+                self._widget.start_motion(group, _live2d.MotionPriority.NORMAL)
 
         face = picker.pick_face(mood)
         if face:

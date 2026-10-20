@@ -109,6 +109,7 @@ class DirectAIClient(QObject):
     """
     reply_received = Signal(str)
     error_occurred = Signal(str)
+    motion_requested = Signal(str)
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
@@ -117,6 +118,7 @@ class DirectAIClient(QObject):
         self._history: list[dict] = []  # [{"role": "user"/"assistant", "content": "..."}]
         self._persona = load_persona()
         self._pending_replies: list[QNetworkReply] = []  # 保活引用，避免被 GC
+        self._available_actions: list[str] = []
 
     # ---- 跟 OneBotClient 对齐的接口 ----
     @property
@@ -137,6 +139,10 @@ class DirectAIClient(QObject):
     def reload_persona(self):
         """人设编辑对话框保存后调用，让下一条消息用上新人设。"""
         self._persona = load_persona()
+
+    def set_available_actions(self, names: list[str]):
+        """desktop_pet.py 调用：更新 AI 可选的动作列表（空列表=不带 tools）。"""
+        self._available_actions = list(names)
 
     def send_user_message(self, text: str) -> bool:
         if not self.connected:
@@ -165,10 +171,33 @@ class DirectAIClient(QObject):
         messages.extend(self._history[-(MAX_HISTORY_TURNS * 2):])
         messages.append({"role": "user", "content": text})
 
-        body = json.dumps({
+        payload = {
             "model": model,
             "messages": messages,
-        }).encode("utf-8")
+        }
+        used_tools = bool(self._available_actions) and bool(self._config.get("ai_motion_picking", False))
+        if used_tools:
+            payload["tools"] = [{
+                "type": "function",
+                "function": {
+                    "name": "play_motion",
+                    "description": "选择一个最符合这句回复语气/情绪的动作播放给用户看。没有合适的也可以不调用。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": self._available_actions,
+                                "description": "要播放的动作名",
+                            }
+                        },
+                        "required": ["action"],
+                    },
+                },
+            }]
+            payload["tool_choice"] = "auto"
+
+        body = json.dumps(payload).encode("utf-8")
 
         url = QUrl(f"{base_url}/chat/completions")
         req = QNetworkRequest(url)
@@ -177,9 +206,9 @@ class DirectAIClient(QObject):
 
         reply = self._manager.post(req, body)
         self._pending_replies.append(reply)
-        reply.finished.connect(lambda: self._on_finished(reply, text, record_as_user))
+        reply.finished.connect(lambda: self._on_finished(reply, text, record_as_user, used_tools))
 
-    def _on_finished(self, reply: QNetworkReply, sent_text: str, record_as_user: bool):
+    def _on_finished(self, reply: QNetworkReply, sent_text: str, record_as_user: bool, used_tools: bool = False):
         if reply in self._pending_replies:
             self._pending_replies.remove(reply)
 
@@ -187,17 +216,32 @@ class DirectAIClient(QObject):
             status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
             detail = reply.errorString()
             reply.deleteLater()
-            self.error_occurred.emit(f"……请求失败了（{status or ''} {detail}）。")
+            msg = f"……请求失败了（{status or ''} {detail}）。"
+            if used_tools:
+                msg += "（可能是这个模型不支持 function calling，去菜单里关掉「AI自主选动作」试试）"
+            self.error_occurred.emit(msg)
             return
 
         raw = bytes(reply.readAll()).decode("utf-8", errors="replace")
         reply.deleteLater()
         try:
             data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"].strip()
+            message = data["choices"][0]["message"]
+            content = (message.get("content") or "").strip()
         except Exception as e:
             self.error_occurred.emit(f"……返回的内容有点奇怪，解析失败了：{e}")
             return
+
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            try:
+                call = tool_calls[0]
+                args = json.loads(call["function"]["arguments"])
+                action = args.get("action")
+                if action:
+                    self.motion_requested.emit(action)
+            except Exception as e:
+                print(f"[DirectAIClient] tool_calls parse failed: {e}")
 
         if record_as_user:
             self._history.append({"role": "user", "content": sent_text})

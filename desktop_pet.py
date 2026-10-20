@@ -264,6 +264,7 @@ class PetWindow(QWidget):
         self._phys_timer.setInterval(16)  # ~60fps
         self._phys_timer.timeout.connect(self._physics_step)
         self._drag_velocity_tracker = []  # [(timestamp_ms, QPoint), ...]
+        self._ai_picked_motion = False
 
         # 气泡
         self._bubble = BubbleWindow()
@@ -285,6 +286,7 @@ class PetWindow(QWidget):
         self._chat = self._make_chat_client()
         self._connect_chat_signals()
         self._chat.start()
+        self._refresh_ai_actions()
 
         # 聊天输入窗口
         self._chat_input = ChatInputWindow()
@@ -362,6 +364,8 @@ class PetWindow(QWidget):
             self._chat.connection_changed.connect(self._on_connection_changed)
         if hasattr(self._chat, "error_occurred"):
             self._chat.error_occurred.connect(self._on_chat_error)
+        if hasattr(self._chat, "motion_requested"):
+            self._chat.motion_requested.connect(self._on_ai_motion_requested)
 
     def _swap_chat_client(self):
         """切换对话后端（AstrBot ↔ 直连 API）：停旧建新。"""
@@ -369,6 +373,7 @@ class PetWindow(QWidget):
         self._chat = self._make_chat_client()
         self._connect_chat_signals()
         self._chat.start()
+        self._refresh_ai_actions()
 
     def _on_chat_error(self, message: str):
         self._show_bubble(message)
@@ -530,6 +535,12 @@ class PetWindow(QWidget):
             motion_act = QAction("动作精简…", self)
             motion_act.triggered.connect(self._open_motion_editor)
             menu.addAction(motion_act)
+
+            if self._config.get("chat_backend") == "direct_api":
+                ai_motion_act = QAction("AI自主选动作", self, checkable=True)
+                ai_motion_act.setChecked(self._config.get("ai_motion_picking", False))
+                ai_motion_act.triggered.connect(self._toggle_ai_motion_picking)
+                menu.addAction(ai_motion_act)
 
         menu.addSeparator()
 
@@ -713,7 +724,31 @@ class PetWindow(QWidget):
         _, clean_text = parse_emotion_tag(text)
         self._show_bubble(clean_text)
         # 让渲染层做个"回话"反应（Live2D 会播对应情绪动作）
-        self._renderer.on_message(text, self)
+        # 如果 AI 已经通过 function calling 主动选了动作，就不要再让关键词猜测覆盖掉
+        pick_body = not getattr(self, "_ai_picked_motion", False)
+        self._ai_picked_motion = False
+        self._renderer.on_message(text, self, pick_body=pick_body)
+
+    def _on_ai_motion_requested(self, name: str):
+        """DirectAIClient 解析出 tool_calls 时触发：AI 主动选的动作直接播放。"""
+        self._ai_picked_motion = True
+        if hasattr(self._renderer, "play_action"):
+            self._renderer.play_action(name)
+
+    def _toggle_ai_motion_picking(self):
+        self._config["ai_motion_picking"] = not self._config.get("ai_motion_picking", False)
+        save_config(self._config)
+        self._refresh_ai_actions()
+
+    def _refresh_ai_actions(self):
+        """把精简后的可选动作列表同步给直连 API 客户端（没开/非直连/非 Live2D 时清空）。"""
+        if (self._config.get("chat_backend") == "direct_api"
+                and self._config.get("ai_motion_picking", False)
+                and hasattr(self._renderer, "get_available_actions")):
+            if hasattr(self._chat, "set_available_actions"):
+                self._chat.set_available_actions(self._renderer.get_available_actions())
+        elif hasattr(self._chat, "set_available_actions"):
+            self._chat.set_available_actions([])
 
     def _on_connection_changed(self, connected: bool):
         """WS 连接状态变化（仅 AstrBot 后端会触发）"""
@@ -768,6 +803,7 @@ class PetWindow(QWidget):
         dlg = MotionEditorDialog(self._renderer, self)
         if dlg.exec() == QDialog.Accepted:
             self._show_bubble("……嗯，动作整理好了。", duration_ms=1800)
+            self._refresh_ai_actions()
 
     def _swap_renderer(self):
         """
@@ -808,6 +844,7 @@ class PetWindow(QWidget):
 
         # 更新托盘图标（图片模式立即有；Live2D 先回落 app.ico，等截图后由 tray_icon_changed 再更新）
         self._refresh_tray_icon()
+        self._refresh_ai_actions()
 
         self._show_bubble("……嗯，换了个样子。", duration_ms=1600)
 
@@ -1248,6 +1285,7 @@ DEFAULT_CONFIG = {
     "pet_mode": "image",               # "image" | "live2d"
     "image_path": "",                  # 空 → 用内置 1.png
     "live2d_model_path": "",           # xxx.model3.json 的绝对路径
+    "ai_motion_picking": False,        # 直连 API + Live2D 时，让 AI 自己用 function calling 选动作
 }
 
 
