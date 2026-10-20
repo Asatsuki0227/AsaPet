@@ -401,6 +401,18 @@ class MotionPicker:
         """返回有至少一个动作的情绪列表。"""
         return [m for m, g in self._map.items() if g]
 
+    def get_map(self) -> dict[str, list[str]]:
+        """拷贝一份当前的情绪→动作映射，给动作编辑界面展示用。"""
+        return {mood: list(groups) for mood, groups in self._map.items()}
+
+    def set_map(self, mapping: dict[str, list[str]]) -> None:
+        """用编辑界面保存的结果替换当前映射（只保留模型里确实存在的组名）。"""
+        group_set = set(self._all_groups)
+        self._map = {
+            mood: [g for g in groups if g in group_set]
+            for mood, groups in mapping.items()
+        }
+
     def pick_face(self, mood: str) -> Optional[str]:
         """从指定情绪桶里随机挑一个表情（face_*）返回，没有就 None。"""
         faces = [g for g in self._map.get(mood, []) if g.startswith("face_")]
@@ -600,6 +612,33 @@ class Live2DRenderer(PetRenderer):
 
     def tray_icon(self) -> QIcon:
         return self._tray_icon
+
+    def model_path(self) -> str:
+        return self._model_path
+
+    def get_motion_map(self) -> Optional[dict[str, list[str]]]:
+        """给动作编辑界面用：拿当前模型的情绪→动作映射。模型没加载完时返回 None。"""
+        picker = self._widget.picker()
+        if picker is None:
+            return None
+        return picker.get_map()
+
+    def set_motion_map(self, mapping: dict[str, list[str]]) -> None:
+        """编辑界面保存后调用：更新内存里的映射，并持久化到 motion_map.json。"""
+        picker = self._widget.picker()
+        if picker is None:
+            return
+        picker.set_map(mapping)
+        map_path = os.path.join(os.path.dirname(self._model_path), "motion_map.json")
+        try:
+            with open(map_path, "w", encoding="utf-8") as f:
+                json.dump(mapping, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[Live2D] save motion_map failed: {e}")
+
+    def test_play(self, group: str) -> None:
+        """编辑界面里点"试播"用：直接按组名播放一个身体动作，不经过情绪桶随机。"""
+        self._widget.start_motion(group, _live2d.MotionPriority.FORCE)
 
     def _play_mood(self, mood: str, priority: int, switch_face: bool = False):
         picker = self._widget.picker()

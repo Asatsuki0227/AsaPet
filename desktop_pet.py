@@ -38,6 +38,7 @@ from character_dialog import CharacterDialog
 from updater import check_for_update, UpdateDialog
 from ai_chat import DirectAIClient, request_models, parse_models_response
 from persona_dialog import PersonaDialog
+from motion_editor_dialog import MotionEditorDialog
 
 
 # --------------------------- 配置区 ---------------------------
@@ -525,6 +526,11 @@ class PetWindow(QWidget):
         switch_act.triggered.connect(self._open_character_dialog)
         menu.addAction(switch_act)
 
+        if self._config.get("pet_mode", "image") == "live2d":
+            motion_act = QAction("动作精简…", self)
+            motion_act.triggered.connect(self._open_motion_editor)
+            menu.addAction(motion_act)
+
         menu.addSeparator()
 
         # 聊天：后端是 AstrBot 还是直连 API，菜单文案跟着换
@@ -756,6 +762,12 @@ class PetWindow(QWidget):
         self._config["live2d_model_path"] = l2d
         save_config(self._config)
         self._swap_renderer()
+
+    def _open_motion_editor(self):
+        """右键菜单"动作精简…"入口，只在 Live2D 模式下可用。"""
+        dlg = MotionEditorDialog(self._renderer, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._show_bubble("……嗯，动作整理好了。", duration_ms=1800)
 
     def _swap_renderer(self):
         """
