@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import Optional
 
@@ -271,6 +272,9 @@ class DirectAIClient(QObject):
             print(f"[DirectAIClient] motion pick parse failed: {e}")
             return
 
-        action = action.strip().strip("。.，,\"'`\n ")
+        # deepseek-r1 之类的推理模型会先吐一段 <think>...</think> 再给结论，
+        # 把思考过程去掉，只留最后真正的动作名
+        action = re.sub(r"<think>.*?</think>", "", action, flags=re.DOTALL).strip()
+        action = action.strip("。.，,\"'`\n ")
         if action and action in self._available_actions:
             self.motion_requested.emit(action)
