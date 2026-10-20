@@ -555,6 +555,10 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
 
 class Live2DRenderer(PetRenderer):
     _initialized = False
+    # 贴身宽度（画布宽高比算出来的）留不出甩手摆衣服的空间，实测个别动作
+    # 展开幅度能到贴身宽度的 1.24 倍（w-happy11-pose），这里统一放宽到 1.3
+    # 倍作缓冲区；高度不受影响，只是横向多留白，模型会自动居中在留白中间。
+    _WIDTH_MARGIN = 1.3
 
     def __init__(self, model_json_path: str, parent_widget: QWidget):
         super().__init__()
@@ -583,7 +587,7 @@ class Live2DRenderer(PetRenderer):
         return self._widget
 
     def natural_size_for_height(self, h: int) -> QSize:
-        return QSize(max(1, int(h * self._aspect)), h)
+        return QSize(max(1, int(h * self._aspect * self._WIDTH_MARGIN)), h)
 
     def layout_for_size(self, size: QSize) -> None:
         self._widget.setGeometry(0, 0, size.width(), size.height())
