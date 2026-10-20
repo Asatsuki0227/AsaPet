@@ -141,7 +141,7 @@ class DirectAIClient(QObject):
         self._persona = load_persona()
 
     def set_available_actions(self, names: list[str]):
-        """desktop_pet.py 调用：更新 AI 可选的动作列表（空列表=不带 tools）。"""
+        """desktop_pet.py 调用：更新 AI 可选的动作列表（空列表=不选动作）。"""
         self._available_actions = list(names)
 
     def send_user_message(self, text: str) -> bool:
@@ -175,40 +175,21 @@ class DirectAIClient(QObject):
             "model": model,
             "messages": messages,
         }
-        used_tools = bool(self._available_actions) and bool(self._config.get("ai_motion_picking", False))
-        if used_tools:
-            payload["tools"] = [{
-                "type": "function",
-                "function": {
-                    "name": "play_motion",
-                    "description": "选择一个最符合这句回复语气/情绪的动作播放给用户看。没有合适的也可以不调用。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": self._available_actions,
-                                "description": "要播放的动作名",
-                            }
-                        },
-                        "required": ["action"],
-                    },
-                },
-            }]
-            payload["tool_choice"] = "auto"
+        reply = self._post_chat(base_url, api_key, payload)
+        reply.finished.connect(lambda: self._on_finished(reply, text, record_as_user))
 
-        body = json.dumps(payload).encode("utf-8")
-
+    def _post_chat(self, base_url: str, api_key: str, payload: dict) -> QNetworkReply:
         url = QUrl(f"{base_url}/chat/completions")
         req = QNetworkRequest(url)
         req.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
-        req.setRawHeader(b"Authorization", f"Bearer {api_key}".encode("utf-8"))
-
+        if api_key:
+            req.setRawHeader(b"Authorization", f"Bearer {api_key}".encode("utf-8"))
+        body = json.dumps(payload).encode("utf-8")
         reply = self._manager.post(req, body)
         self._pending_replies.append(reply)
-        reply.finished.connect(lambda: self._on_finished(reply, text, record_as_user, used_tools))
+        return reply
 
-    def _on_finished(self, reply: QNetworkReply, sent_text: str, record_as_user: bool, used_tools: bool = False):
+    def _on_finished(self, reply: QNetworkReply, sent_text: str, record_as_user: bool):
         if reply in self._pending_replies:
             self._pending_replies.remove(reply)
 
@@ -216,32 +197,17 @@ class DirectAIClient(QObject):
             status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
             detail = reply.errorString()
             reply.deleteLater()
-            msg = f"……请求失败了（{status or ''} {detail}）。"
-            if used_tools:
-                msg += "（可能是这个模型不支持 function calling，去菜单里关掉「AI自主选动作」试试）"
-            self.error_occurred.emit(msg)
+            self.error_occurred.emit(f"……请求失败了（{status or ''} {detail}）。")
             return
 
         raw = bytes(reply.readAll()).decode("utf-8", errors="replace")
         reply.deleteLater()
         try:
             data = json.loads(raw)
-            message = data["choices"][0]["message"]
-            content = (message.get("content") or "").strip()
+            content = (data["choices"][0]["message"].get("content") or "").strip()
         except Exception as e:
             self.error_occurred.emit(f"……返回的内容有点奇怪，解析失败了：{e}")
             return
-
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            try:
-                call = tool_calls[0]
-                args = json.loads(call["function"]["arguments"])
-                action = args.get("action")
-                if action:
-                    self.motion_requested.emit(action)
-            except Exception as e:
-                print(f"[DirectAIClient] tool_calls parse failed: {e}")
 
         if record_as_user:
             self._history.append({"role": "user", "content": sent_text})
@@ -252,3 +218,59 @@ class DirectAIClient(QObject):
             self._history = self._history[-max_len:]
 
         self.reply_received.emit(content)
+
+        if content and self._available_actions and self._config.get("ai_motion_picking", False):
+            self._pick_motion(content)
+
+    # ---- AI 自主选动作：独立的一次请求，跟主对话模型完全分开 ----
+    # 不走 function calling——直接让模型把动作名当文字输出，兼容性更好（本地小模型
+    # 也能用），而且不会出现"模型只给调用、不给文字"从而要追问一次的情况。
+    # 可以在设置里单独指定一个更便宜/本地跑的模型（比如 Ollama 的 deepseek-r1），
+    # 留空则退回复用主对话的 api_base_url/api_key/api_model。
+    def _pick_motion(self, reply_text: str):
+        base_url = (self._config.get("motion_api_base_url", "").strip()
+                    or self._config.get("api_base_url", "").strip()).rstrip("/")
+        api_key = (self._config.get("motion_api_key", "").strip()
+                   or self._config.get("api_key", "").strip())
+        model = (self._config.get("motion_api_model", "").strip()
+                 or self._config.get("api_model", "").strip())
+        if not base_url or not model:
+            return
+
+        actions = self._available_actions
+        prompt = (
+            "下面是一句对话回复和一份可选的动作名列表。请选出最符合这句话语气/情绪的"
+            "一个动作，只输出动作名本身，不要输出任何其他文字、标点或解释；"
+            "如果没有合适的，只输出：无\n\n"
+            f"动作列表：\n{chr(10).join(actions)}\n\n"
+            f"这句回复：{reply_text}"
+        )
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+        }
+        reply = self._post_chat(base_url, api_key, payload)
+        reply.finished.connect(lambda: self._on_motion_picked(reply))
+
+    def _on_motion_picked(self, reply: QNetworkReply):
+        if reply in self._pending_replies:
+            self._pending_replies.remove(reply)
+
+        if reply.error() != QNetworkReply.NoError:
+            print(f"[DirectAIClient] motion pick failed: {reply.errorString()}")
+            reply.deleteLater()
+            return
+
+        raw = bytes(reply.readAll()).decode("utf-8", errors="replace")
+        reply.deleteLater()
+        try:
+            data = json.loads(raw)
+            action = (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception as e:
+            print(f"[DirectAIClient] motion pick parse failed: {e}")
+            return
+
+        action = action.strip().strip("。.，,\"'`\n ")
+        if action and action in self._available_actions:
+            self.motion_requested.emit(action)

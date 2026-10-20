@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                                QInputDialog, QMessageBox, QDialog,
                                QFormLayout, QDialogButtonBox, QPushButton,
                                QRadioButton, QButtonGroup, QComboBox,
-                               QHBoxLayout)
+                               QHBoxLayout, QGroupBox)
 from PySide6.QtNetwork import QHostAddress, QNetworkRequest, QNetworkAccessManager
 from PySide6.QtWebSockets import QWebSocketServer, QWebSocket
 
@@ -264,7 +264,6 @@ class PetWindow(QWidget):
         self._phys_timer.setInterval(16)  # ~60fps
         self._phys_timer.timeout.connect(self._physics_step)
         self._drag_velocity_tracker = []  # [(timestamp_ms, QPoint), ...]
-        self._ai_picked_motion = False
 
         # 气泡
         self._bubble = BubbleWindow()
@@ -724,14 +723,19 @@ class PetWindow(QWidget):
         _, clean_text = parse_emotion_tag(text)
         self._show_bubble(clean_text)
         # 让渲染层做个"回话"反应（Live2D 会播对应情绪动作）
-        # 如果 AI 已经通过 function calling 主动选了动作，就不要再让关键词猜测覆盖掉
-        pick_body = not getattr(self, "_ai_picked_motion", False)
-        self._ai_picked_motion = False
-        self._renderer.on_message(text, self, pick_body=pick_body)
+        # AI 自主选动作是在回复显示之后才发起的独立请求，结果会晚一点到——
+        # 这里不等它，只要功能开着就直接不跑关键词瞎猜，交给 AI 的选择说了算
+        self._renderer.on_message(text, self, pick_body=not self._ai_motion_picking_active())
+
+    def _ai_motion_picking_active(self) -> bool:
+        return bool(
+            self._config.get("chat_backend") == "direct_api"
+            and self._config.get("ai_motion_picking", False)
+            and hasattr(self._renderer, "get_available_actions")
+        )
 
     def _on_ai_motion_requested(self, name: str):
-        """DirectAIClient 解析出 tool_calls 时触发：AI 主动选的动作直接播放。"""
-        self._ai_picked_motion = True
+        """DirectAIClient 选出动作后触发：AI 主动选的动作直接播放。"""
         if hasattr(self._renderer, "play_action"):
             self._renderer.play_action(name)
 
@@ -1281,11 +1285,17 @@ DEFAULT_CONFIG = {
     "api_base_url": "",                # 例如 https://api.deepseek.com/v1
     "api_key": "",
     "api_model": "",                   # 例如 deepseek-chat
+    # AI 自主选动作用的独立模型（留空则复用上面的主对话模型）。
+    # 建议指到一个免费/本地的模型，比如本地 Ollama 跑的 deepseek-r1，
+    # 这样选动作这步就不会消耗主对话模型的 token。
+    "motion_api_base_url": "",
+    "motion_api_key": "",
+    "motion_api_model": "",
     # 载体：图片 or Live2D
     "pet_mode": "image",               # "image" | "live2d"
     "image_path": "",                  # 空 → 用内置 1.png
     "live2d_model_path": "",           # xxx.model3.json 的绝对路径
-    "ai_motion_picking": False,        # 直连 API + Live2D 时，让 AI 自己用 function calling 选动作
+    "ai_motion_picking": False,        # 直连 API + Live2D 时，让 AI 自己选一个动作配合回复
 }
 
 
@@ -1637,6 +1647,48 @@ class ChatSettingsDialog(QDialog):
         self._direct_group = QWidget()
         self._direct_group.setLayout(direct_form)
 
+        # AI 自主选动作用的独立模型（留空则复用上面的主对话模型）
+        self._motion_api_base_url = QLineEdit(config.get("motion_api_base_url", ""))
+        self._motion_api_base_url.setPlaceholderText("留空=用上面的主对话模型；本地部署例如 http://127.0.0.1:11434/v1")
+        self._motion_api_key = QLineEdit(config.get("motion_api_key", ""))
+        self._motion_api_key.setEchoMode(QLineEdit.Password)
+        self._motion_api_key.setPlaceholderText("本地部署通常留空即可")
+
+        self._motion_api_model = QComboBox()
+        self._motion_api_model.setEditable(True)
+        saved_motion_model = config.get("motion_api_model", "")
+        if saved_motion_model:
+            self._motion_api_model.addItem(saved_motion_model)
+            self._motion_api_model.setCurrentText(saved_motion_model)
+        self._motion_api_model.lineEdit().setPlaceholderText("例如 deepseek-r1，或点「获取」自动拉取")
+        self._motion_fetch_btn = QPushButton("获取")
+        self._motion_fetch_btn.setFixedWidth(48)
+        self._motion_fetch_btn.setToolTip("从服务商 /models 接口获取可用模型列表")
+        self._motion_fetch_btn.clicked.connect(self._fetch_motion_models)
+
+        motion_model_row = QHBoxLayout()
+        motion_model_row.addWidget(self._motion_api_model, 1)
+        motion_model_row.addWidget(self._motion_fetch_btn)
+        motion_model_widget = QWidget()
+        motion_model_widget.setLayout(motion_model_row)
+
+        motion_form = QFormLayout()
+        motion_form.addRow("Base URL", self._motion_api_base_url)
+        motion_form.addRow("API Key", self._motion_api_key)
+        motion_form.addRow("模型", motion_model_widget)
+        motion_note = QLabel(
+            "「AI自主选动作」用的独立模型，跟主对话完全分开调用。\n"
+            "建议指到免费/本地部署的模型（比如本地 Ollama 跑 deepseek-r1），这样选动作不会消耗主对话模型的 token。"
+        )
+        motion_note.setWordWrap(True)
+        motion_note.setStyleSheet("color: #666; font-size: 11px;")
+
+        motion_layout = QVBoxLayout()
+        motion_layout.addLayout(motion_form)
+        motion_layout.addWidget(motion_note)
+        self._motion_group = QGroupBox("AI 自主选动作模型（可选）")
+        self._motion_group.setLayout(motion_layout)
+
         self._radio_astrbot.toggled.connect(self._update_visible_group)
         self._update_visible_group()
 
@@ -1662,6 +1714,7 @@ class ChatSettingsDialog(QDialog):
         layout.addLayout(top_form)
         layout.addWidget(self._astrbot_group)
         layout.addWidget(self._direct_group)
+        layout.addWidget(self._motion_group)
         layout.addWidget(note)
         layout.addWidget(buttons)
 
@@ -1669,6 +1722,37 @@ class ChatSettingsDialog(QDialog):
         is_astrbot = self._radio_astrbot.isChecked()
         self._astrbot_group.setVisible(is_astrbot)
         self._direct_group.setVisible(not is_astrbot)
+        self._motion_group.setVisible(not is_astrbot)
+
+    def _fetch_motion_models(self):
+        base_url = self._motion_api_base_url.text().strip() or self._api_base_url.text().strip()
+        api_key = self._motion_api_key.text().strip() or self._api_key.text().strip()
+        if not base_url:
+            QMessageBox.warning(self, "获取模型", "先填一下 Base URL 吧。")
+            return
+
+        self._motion_fetch_btn.setEnabled(False)
+        self._motion_fetch_btn.setText("…")
+        reply = request_models(self._manager, base_url, api_key)
+        reply.finished.connect(lambda: self._on_motion_models_fetched(reply))
+
+    def _on_motion_models_fetched(self, reply):
+        self._motion_fetch_btn.setEnabled(True)
+        self._motion_fetch_btn.setText("获取")
+        ids, error = parse_models_response(reply)
+        reply.deleteLater()
+        if error:
+            QMessageBox.warning(self, "获取模型", f"……{error}")
+            return
+
+        current = self._motion_api_model.currentText().strip()
+        self._motion_api_model.clear()
+        self._motion_api_model.addItems(ids)
+        if current and current in ids:
+            self._motion_api_model.setCurrentText(current)
+        elif current:
+            self._motion_api_model.insertItem(0, current)
+            self._motion_api_model.setCurrentIndex(0)
 
     def _fetch_models(self):
         base_url = self._api_base_url.text().strip()
@@ -1712,6 +1796,9 @@ class ChatSettingsDialog(QDialog):
         cfg["api_base_url"] = self._api_base_url.text().strip()
         cfg["api_key"] = self._api_key.text().strip()
         cfg["api_model"] = self._api_model.currentText().strip()
+        cfg["motion_api_base_url"] = self._motion_api_base_url.text().strip()
+        cfg["motion_api_key"] = self._motion_api_key.text().strip()
+        cfg["motion_api_model"] = self._motion_api_model.currentText().strip()
         return cfg
 
 
