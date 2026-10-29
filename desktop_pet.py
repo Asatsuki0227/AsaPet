@@ -118,6 +118,53 @@ def resource_path(relative_path: str) -> str:
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
+# --------------------------- 开机自启辅助函数 ---------------------------
+REG_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+REG_APP_NAME = "AsaPet"
+
+
+def is_autostart_enabled() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_KEY, 0, winreg.KEY_READ) as key:
+            val, _ = winreg.QueryValueEx(key, REG_APP_NAME)
+            return bool(val)
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"[AutoStart] check error: {e}")
+        return False
+
+
+def set_autostart_enabled(enable: bool) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_RUN_KEY) as key:
+            if enable:
+                if getattr(sys, "frozen", False):
+                    cmd = f'"{sys.executable}"'
+                else:
+                    python_exe = sys.executable
+                    pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+                    exe_to_use = pythonw_exe if os.path.exists(pythonw_exe) else python_exe
+                    script_path = os.path.abspath(__file__)
+                    cmd = f'"{exe_to_use}" "{script_path}"'
+                winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
+            else:
+                try:
+                    winreg.DeleteValue(key, REG_APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as e:
+        print(f"[AutoStart] set error: {e}")
+        return False
+
+
 
 # --------------------------- 气泡窗口 ---------------------------
 class BubbleWindow(QWidget):
@@ -336,6 +383,9 @@ class PetWindow(QWidget):
         self._proactive_timer.timeout.connect(self._on_proactive_tick)
         if self._proactive_enabled:
             self._schedule_proactive()
+
+        # ---------- 开机自启 ----------
+        self._autostart_enabled = is_autostart_enabled()
 
 
     # ---------- 窗口标志 ----------
@@ -652,6 +702,11 @@ class PetWindow(QWidget):
         proactive_act.setChecked(self._proactive_enabled)
         proactive_act.triggered.connect(self._toggle_proactive)
         menu.addAction(proactive_act)
+
+        autostart_act = QAction("开机自启", self, checkable=True)
+        autostart_act.setChecked(self._autostart_enabled)
+        autostart_act.triggered.connect(self._toggle_autostart)
+        menu.addAction(autostart_act)
 
         menu.addSeparator()
 
@@ -1140,6 +1195,18 @@ class PetWindow(QWidget):
             self._show_bubble("……好，不打扰你了。", duration_ms=2000)
 
     # ---- 动作 1：跳跃 ----
+    def _toggle_autostart(self):
+        new_state = not self._autostart_enabled
+        ok = set_autostart_enabled(new_state)
+        if ok:
+            self._autostart_enabled = new_state
+            self._config["auto_start"] = new_state
+            save_config(self._config)
+            msg = "[emotion:happy]……开机自启已开启。" if new_state else "[emotion:neutral]……开机自启已关闭。"
+            self._show_bubble(msg, duration_ms=2000)
+        else:
+            self._show_bubble("……设置开机自启失败了。", duration_ms=2500)
+
     def _interact_jump(self):
         start = self._base_pos
         peak = QPoint(start.x(), start.y() - int(self.height() * 0.35))
@@ -1367,6 +1434,7 @@ DEFAULT_CONFIG = {
     "image_path": "",                  # 空 → 用内置 1.png
     "live2d_model_path": "",           # xxx.model3.json 的绝对路径
     "ai_motion_picking": False,        # 直连 API + Live2D 时，让 AI 自己选一个动作配合回复
+    "auto_start": False,               # 是否开机自启
 }
 
 
@@ -1920,6 +1988,12 @@ class ChatInputWindow(QWidget):
 
 # --------------------------- 入口 ---------------------------
 def main():
+    # 确保工作目录为程序所在目录（开机自启或快捷方式启动时工作目录可能是 System32）
+    if getattr(sys, "frozen", False):
+        os.chdir(os.path.dirname(sys.executable))
+    else:
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
     # 高 DPI 支持
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
