@@ -41,6 +41,7 @@ from updater import check_for_update, UpdateDialog
 from ai_chat import DirectAIClient, request_models, parse_models_response
 from persona_dialog import PersonaDialog
 from motion_editor_dialog import MotionEditorDialog
+from memory_dialog import MemoryDialog
 
 
 # --------------------------- 配置区 ---------------------------
@@ -691,6 +692,10 @@ class PetWindow(QWidget):
             persona_act.triggered.connect(self._open_persona_dialog)
             menu.addAction(persona_act)
 
+            memory_act = QAction("记忆管理…", self)
+            memory_act.triggered.connect(self._open_memory_dialog)
+            menu.addAction(memory_act)
+
         menu.addSeparator()
 
         idle_act = QAction("待机动画", self, checkable=True)
@@ -910,6 +915,14 @@ class PetWindow(QWidget):
             if hasattr(self._chat, "reload_persona"):
                 self._chat.reload_persona()
             self._show_bubble("……嗯，我记住了。", duration_ms=1800)
+
+    def _open_memory_dialog(self):
+        dlg = MemoryDialog(self._chat, self._config, save_cb=self._save_config_from_dialog, parent=self)
+        dlg.exec()
+
+    def _save_config_from_dialog(self, new_cfg: dict):
+        self._config.update(new_cfg)
+        save_config(self._config)
 
     # ---------- 切换角色（图片 / Live2D） ----------
     def _open_character_dialog(self):
@@ -1434,6 +1447,7 @@ DEFAULT_CONFIG = {
     "image_path": "",                  # 空 → 用内置 1.png
     "live2d_model_path": "",           # xxx.model3.json 的绝对路径
     "ai_motion_picking": False,        # 直连 API + Live2D 时，让 AI 自己选一个动作配合回复
+    "auto_memory": True,               # 直连 API 时，是否在对话中自动提取长期记忆
     "auto_start": False,               # 是否开机自启
 }
 
@@ -1779,10 +1793,14 @@ class ChatSettingsDialog(QDialog):
         model_widget = QWidget()
         model_widget.setLayout(model_row)
 
+        self._auto_memory = QCheckBox("启用对话自动记忆（在聊天中自动学习喜好与习惯）")
+        self._auto_memory.setChecked(config.get("auto_memory", True))
+
         direct_form = QFormLayout()
         direct_form.addRow("Base URL", self._api_base_url)
         direct_form.addRow("API Key", self._api_key)
         direct_form.addRow("模型", model_widget)
+        direct_form.addRow(self._auto_memory)
         self._direct_group = QWidget()
         self._direct_group.setLayout(direct_form)
 
@@ -1832,8 +1850,8 @@ class ChatSettingsDialog(QDialog):
         self._update_visible_group()
 
         note = QLabel(
-            "· 直连 API 支持任何 OpenAI 兼容接口（DeepSeek / Kimi / 智谱 / SiliconFlow / OpenAI 官方等）。\n"
-            "· 直连模式没有长期记忆，重启程序后对话历史会清空；人设可通过右键「编辑人设…」调整。"
+            "· 直连 API 支持任何 OpenAI 兼容接口，并已原生支持本地对话上下文与长期记忆（可在右键「记忆管理…」中查看与编辑）。\n"
+            "· 人设 System Prompt 可随时通过右键「编辑人设…」进行调整。"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #666; font-size: 11px;")
@@ -1935,6 +1953,7 @@ class ChatSettingsDialog(QDialog):
         cfg["api_base_url"] = self._api_base_url.text().strip()
         cfg["api_key"] = self._api_key.text().strip()
         cfg["api_model"] = self._api_model.currentText().strip()
+        cfg["auto_memory"] = self._auto_memory.isChecked()
         cfg["motion_api_base_url"] = self._motion_api_base_url.text().strip()
         cfg["motion_api_key"] = self._motion_api_key.text().strip()
         cfg["motion_api_model"] = self._motion_api_model.currentText().strip()

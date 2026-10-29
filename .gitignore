@@ -50,3 +50,9 @@ PROGRESS.md
 
 # Claude Code 本地配置
 .claude/
+
+# 用户本地记忆与历史对话（涉及用户个人隐私与对话记录，不入仓库）
+memory.json
+chat_history.json
+dist/memory.json
+dist/chat_history.json
