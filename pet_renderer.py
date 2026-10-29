@@ -19,8 +19,8 @@ import json
 import random
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QObject, QSize, QTimer, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt, QObject, QPoint, QSize, QTimer, Signal
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
 # live2d-py 是可选依赖：图片模式下不需要
@@ -74,6 +74,11 @@ class PetRenderer(QObject):
     def cleanup(self) -> None:
         pass
 
+    def alpha_at(self, point: QPoint) -> int:
+        """给点击穿透用：返回窗口局部坐标 point 处的不透明度（0-255）。
+        不知道怎么查的渲染器保持 255（不透明/不穿透），不会比现在更差。"""
+        return 255
+
 
 # --------------------------- 图片模式 ---------------------------
 class ImageRenderer(PetRenderer):
@@ -85,6 +90,7 @@ class ImageRenderer(PetRenderer):
             raise RuntimeError(f"无法加载图片: {image_path}")
         self._original = pix
         self._scaled: Optional[QPixmap] = None
+        self._scaled_image: Optional[QImage] = None
         self._parent_widget = parent_widget
         self._label = QLabel(parent_widget)
         self._label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -103,8 +109,15 @@ class ImageRenderer(PetRenderer):
         self._scaled = self._original.scaled(
             w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
+        self._scaled_image = self._scaled.toImage()
         self._label.setPixmap(self._scaled)
         self._label.setGeometry(0, 0, w, h)
+
+    def alpha_at(self, point: QPoint) -> int:
+        img = self._scaled_image
+        if img is None or not img.rect().contains(point):
+            return 255
+        return img.pixelColor(point).alpha()
 
     def set_display_height(self, h: int) -> QSize:
         size = self.natural_size_for_height(h)
@@ -441,6 +454,39 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self.update)
+        self._alpha_cache: Optional[QImage] = None
+        self._alpha_timer = QTimer(self)
+        self._alpha_timer.setInterval(50)  # 50ms ~20fps，减少动作过渡期间穿透判定的误差窗口
+        self._alpha_timer.timeout.connect(self._refresh_alpha_cache)
+
+    def _refresh_alpha_cache(self) -> None:
+        if self._model is None:
+            return
+        try:
+            img = self.grabFramebuffer()
+            # grabFramebuffer() 返回物理像素（随 devicePixelRatio 放大），直接存原图。
+            # alpha_at 查询时再做坐标换算，不在这里 scale 回逻辑尺寸——
+            # scale+SmoothTransformation 会模糊 alpha 边缘，使判定出现宽约数像素的误差带。
+            self._alpha_cache = img
+        except Exception as e:
+            print(f"[Live2D] alpha cache refresh failed: {e}")
+
+    def alpha_at(self, point: QPoint) -> int:
+        """
+        point 是窗口逻辑坐标（来自 mapFromGlobal / 鼠标事件）。
+        grabFramebuffer() 返回物理像素图，需乘以 devicePixelRatio 才能对齐。
+        否则在 1.5x/2x DPI 缩放屏幕上坐标偏左上方，把不透明的模型身体
+        错误读成透明区域，造成「模型穿透」点击失效。
+        """
+        img = self._alpha_cache
+        if img is None:
+            return 255
+        dpr = self.devicePixelRatio()
+        px = int(point.x() * dpr)
+        py = int(point.y() * dpr)
+        if not (0 <= px < img.width() and 0 <= py < img.height()):
+            return 255
+        return img.pixelColor(px, py).alpha()
 
     def picker(self) -> Optional[MotionPicker]:
         return self._picker
@@ -533,6 +579,7 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
             print(f"[Live2D] load model failed: {e}")
             self._model = None
         self._timer.start()
+        self._alpha_timer.start()
         if self._model is not None:
             self._model.Resize(self.width(), self.height())
             # GL 就绪前设过的固定表情，这时候才能真正应用
@@ -563,6 +610,7 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
 
     def cleanup(self):
         self._timer.stop()
+        self._alpha_timer.stop()
 
 
 class Live2DRenderer(PetRenderer):
@@ -637,8 +685,18 @@ class Live2DRenderer(PetRenderer):
             print(f"[Live2D] save motion_map failed: {e}")
 
     def test_play(self, group: str) -> None:
-        """编辑界面里点"试播"用：直接按组名播放一个身体动作，不经过情绪桶随机。"""
-        self.play_action(group)
+        """
+        编辑界面里点"试播"用，不经过情绪桶随机。
+
+        face_* 表情不是靠 StartMotion 播的——它是被 set_fixed_face 覆盖写死在
+        每帧参数上的（见 paintGL），直接 StartMotion 会被下一帧的固定表情参数
+        盖掉，画面上什么变化都看不出来，像是"没播出来"。所以表情类动作要走
+        set_fixed_face，身体动作才走 play_action/StartMotion。
+        """
+        if group.startswith("face_"):
+            self._widget.set_fixed_face(group)
+        else:
+            self.play_action(group)
 
     def get_available_actions(self) -> list[str]:
         """给 AI 自主选动作用：精简后（motion_map 里实际保留）的身体动作名去重列表。"""
@@ -655,6 +713,9 @@ class Live2DRenderer(PetRenderer):
     def play_action(self, group: str) -> None:
         """AI 主动选中一个动作后调用：直接播放，不经过情绪桶随机。"""
         self._widget.start_motion(group, _live2d.MotionPriority.FORCE)
+
+    def alpha_at(self, point: QPoint) -> int:
+        return self._widget.alpha_at(point)
 
     def _play_mood(self, mood: str, priority: int, switch_face: bool = False):
         picker = self._widget.picker()

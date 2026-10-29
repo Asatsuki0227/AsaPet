@@ -13,6 +13,8 @@ import os
 import json
 import time
 import random
+import ctypes
+from ctypes import wintypes
 from typing import Optional
 
 from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QSize, QUrl,
@@ -42,12 +44,19 @@ from motion_editor_dialog import MotionEditorDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
 MAX_HEIGHT = 800
 WHEEL_STEP = 20             # 滚轮每次缩放像素
+
+# 点击穿透常量
+WM_NCHITTEST = 0x0084
+HTTRANSPARENT = -1
+GWL_EXSTYLE = -20
+WS_EX_LAYERED = 0x00080000
+WS_EX_TRANSPARENT = 0x00000020
 BUBBLE_DURATION_MS = 2200   # 气泡显示时间
 
 # 待机动画配置
@@ -246,6 +255,14 @@ class PetWindow(QWidget):
         self._is_dragging = False
         self._press_pos = None
 
+        # 点击穿透动态切换（光标在透明区域时开启 WS_EX_TRANSPARENT，在角色身上时关闭）
+        self._is_click_through = False
+        self._menu_open = False
+        self._click_through_timer = QTimer(self)
+        self._click_through_timer.setInterval(30)  # ~33fps 轮询光标位置
+        self._click_through_timer.timeout.connect(self._check_click_through)
+        self._click_through_timer.start()
+
         # 滚轮缩放合并（见 wheelEvent）
         self._pending_zoom_height: Optional[int] = None
         self._zoom_timer = QTimer(self)
@@ -435,6 +452,56 @@ class PetWindow(QWidget):
     def _toggle_visible(self):
         self.setVisible(not self.isVisible())
 
+    # ---------- 点击穿透 ----------
+    def _set_click_through(self, enable: bool):
+        if sys.platform != "win32":
+            return
+        if self._is_click_through == enable:
+            return
+        hwnd = int(self.winId())
+        ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if enable:
+            ex_style |= WS_EX_TRANSPARENT
+        else:
+            ex_style &= ~WS_EX_TRANSPARENT
+        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+        self._is_click_through = enable
+
+    def _check_click_through(self):
+        if sys.platform != "win32":
+            return
+        # 正在拖动或右键菜单弹出时，保持不穿透以捕获交互
+        if self._is_dragging or self._menu_open:
+            if self._is_click_through:
+                self._set_click_through(False)
+            return
+
+        cursor_pos = QCursor.pos()
+        local = self.mapFromGlobal(cursor_pos)
+        if self.rect().contains(local):
+            alpha = self._renderer.alpha_at(local)
+            # 光标悬停在角色身上（不透明度 > 10） -> 关闭穿透，允许交互与拖动
+            if alpha > 10:
+                if self._is_click_through:
+                    self._set_click_through(False)
+                return
+
+        # 光标在透明背景区域或窗口外 -> 开启 WS_EX_TRANSPARENT，点击穿透至下层软件/桌面
+        if not self._is_click_through:
+            self._set_click_through(True)
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG" \
+                and not self._is_dragging:
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == WM_NCHITTEST:
+                local = self.mapFromGlobal(QCursor.pos())
+                if self.rect().contains(local):
+                    alpha = self._renderer.alpha_at(local)
+                    if alpha <= 10:
+                        return True, HTTRANSPARENT
+        return super().nativeEvent(eventType, message)
+
     # ---------- 鼠标事件 ----------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -596,7 +663,11 @@ class PetWindow(QWidget):
         quit_act.triggered.connect(QApplication.instance().quit)
         menu.addAction(quit_act)
 
-        menu.exec(global_pos)
+        self._menu_open = True
+        try:
+            menu.exec(global_pos)
+        finally:
+            self._menu_open = False
 
     def _toggle_always_on_top(self):
         self._always_on_top = not self._always_on_top
