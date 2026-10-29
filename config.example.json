@@ -1,0 +1,15 @@
+{
+  "nickname": "诶嘿",
+  "api_base_url": "https://api.deepseek.com/v1",
+  "api_key": "",
+  "api_model": "deepseek-chat",
+  "motion_api_base_url": "",
+  "motion_api_key": "",
+  "motion_api_model": "",
+  "pet_mode": "image",
+  "image_path": "",
+  "live2d_model_path": "",
+  "ai_motion_picking": false,
+  "auto_memory": true,
+  "auto_start": false
+}
