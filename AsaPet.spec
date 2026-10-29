@@ -11,7 +11,6 @@ a = Analysis(
     binaries=live2d_binaries,
     datas=[('1.png', '.'), ('app.ico', '.')] + live2d_datas,
     hiddenimports=[
-        'PySide6.QtWebSockets',
         'PySide6.QtNetwork',
         'PySide6.QtOpenGLWidgets',
     ] + live2d_hiddenimports,
