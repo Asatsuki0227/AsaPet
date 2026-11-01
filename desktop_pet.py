@@ -46,7 +46,7 @@ from app_drawer_dialog import AppDrawerDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
