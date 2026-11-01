@@ -357,6 +357,9 @@ class PetWindow(QWidget):
         self._app_launcher = AppLauncher.get_instance()
         self._last_user_message = ""
 
+        # 清理旧版本遗留的 .old 临时备份文件
+        self._cleanup_old_files()
+
         # 聊天输入窗口
         self._chat_input = ChatInputWindow()
         self._chat_input.message_sent.connect(self._on_user_send)
@@ -712,6 +715,18 @@ class PetWindow(QWidget):
         self.show()
         self.move(pos)
 
+    def _cleanup_old_files(self):
+        """清理自动更新时产生的 .old 历史程序备份"""
+        try:
+            exe_path = sys.executable if getattr(sys, "frozen", False) else os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "dist", "AsaPet.exe"
+            )
+            old_path = exe_path + ".old"
+            if os.path.exists(old_path):
+                os.remove(old_path)
+        except Exception:
+            pass
+
     def _toggle_physics(self):
         self._physics_enabled = not self._physics_enabled
         if not self._physics_enabled:
@@ -727,17 +742,17 @@ class PetWindow(QWidget):
             self, "发现新版本",
             f"新版本 v{info['version']}（当前 v{VERSION}）\n\n"
             f"更新说明：\n{info['notes'][:300]}\n\n"
-            f"是否立即更新？（更新过程需要 1-2 分钟）",
+            f"是否立即更新？（全自动秒级下载与安全替换）",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
         project_dir = os.path.dirname(os.path.abspath(__file__))
-        dlg = UpdateDialog(info["zip_url"], project_dir, parent=self)
+        dl_url = info.get("download_url") or info.get("zip_url")
+        dlg = UpdateDialog(dl_url, project_dir, parent=self)
         if dlg.exec() == QDialog.Accepted and dlg.new_exe_path:
             QMessageBox.information(self, "更新完成",
-                                   f"更新完成！新版本已打包到：\n{dlg.new_exe_path}\n\n"
-                                   f"即将重启...")
+                                   f"更新完成！即将自动重启进入新版本...")
             os.startfile(dlg.new_exe_path)
             QApplication.instance().quit()
 

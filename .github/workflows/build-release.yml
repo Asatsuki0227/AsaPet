@@ -1,0 +1,68 @@
+name: Build and Release Windows App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows x64 Executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller live2d-py PySide6
+
+      - name: Build Single-File EXE with PyInstaller
+        run: |
+          python -m PyInstaller --clean AsaPet.spec
+
+      - name: Package Release Archive
+        id: package
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "latest" }
+          $zipName = "AsaPet-$ver-Windows-x64.zip"
+          $packageDir = "package_temp"
+          New-Item -ItemType Directory -Path $packageDir -Force
+
+          # 拷贝核心产物
+          Copy-Item "dist\AsaPet.exe" -Destination $packageDir\
+          Copy-Item "1.png" -Destination $packageDir\ -ErrorAction SilentlyContinue
+          Copy-Item "app.ico" -Destination $packageDir\ -ErrorAction SilentlyContinue
+          Copy-Item "config.example.json" -Destination $packageDir\
+          Copy-Item "persona.example.json" -Destination $packageDir\
+          Copy-Item "README.md" -Destination $packageDir\
+          Copy-Item "LICENSE" -Destination $packageDir\
+
+          # 压缩打包
+          Compress-Archive -Path "$packageDir\*" -DestinationPath $zipName -Force
+          Write-Output "zip_path=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          files: |
+            AsaPet-*.zip
+            dist/AsaPet.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
