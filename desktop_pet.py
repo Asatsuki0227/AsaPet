@@ -46,7 +46,7 @@ from app_drawer_dialog import AppDrawerDialog
 
 
 # --------------------------- 配置区 ---------------------------
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 IMAGE_FILE = "1.png"
 DEFAULT_HEIGHT = 260        # 默认宠物高度（像素）
 MIN_HEIGHT = 120
@@ -71,47 +71,74 @@ IDLE_BUBBLE_CHANCE = 0.35           # 待机时冒独白气泡的概率
 PROACTIVE_MIN_MINUTES = 20          # 主动搭话最小间隔（分钟）
 PROACTIVE_MAX_MINUTES = 60          # 主动搭话最大间隔（分钟）
 
-# 宵崎奏（ヨイサキ カナデ）风格台词
-# 特点：轻声细语、常带省略号、内向敏感、把作曲/救赎挂在心上、偶尔提到 MEIKO 姐姐
-DIALOGUES = [
-    "[emotion:curious]……嗯？",
-    "[emotion:neutral]……你好。",
-    "[emotion:shy]对不起……打扰到你了吗？",
-    "[emotion:neutral]……请让我再写一会儿曲子。",
-    "[emotion:happy]我……还差一点点就能完成了。",
-    "[emotion:sad]如果这首歌，能拯救某个人就好了……",
-    "[emotion:happy]……谢谢你，愿意来看我。",
-    "[emotion:sad]别担心我……我没事的。",
-    "[emotion:neutral]……熬夜对身体不好哦。",
-    "[emotion:neutral]……你也，要好好休息。",
-    "[emotion:happy]键盘的声音……让人安心呢。",
-    "[emotion:happy]……有你在，稍微能安心一点。",
-    "[emotion:shy]对不起,我……又走神了。",
-    "[emotion:curious]……这段旋律，你觉得怎么样？",
-    "[emotion:neutral]……嗯，我在听。",
-    "[emotion:neutral]只要还能写下去，就没关系……",
-    "[emotion:sad]……绘名她们，一定在等我。",
-    "[emotion:shy]对不起,让你担心了……",
-    "[emotion:sad]……请不要离开哦。",
-    "[emotion:shy]……可以陪我一会儿吗？",
-    "[emotion:neutral]只要，还有人需要这首歌……",
+# 通用默认台词库（温和、通用、适用于任意角色立绘/模型）
+DEFAULT_DIALOGUES = [
+    "[emotion:curious]……嗯？怎么啦？",
+    "[emotion:neutral]……在呢，随时叫我。",
+    "[emotion:happy]戳到我啦，嘿嘿~",
+    "[emotion:neutral]……有什么我能帮你的吗？",
+    "[emotion:happy]今天也要元气满满哦！",
+    "[emotion:neutral]……屏幕看久了，记得喝口水休息一下眼睛哦。",
+    "[emotion:shy]……突然戳我一下，吓了一小跳。",
+    "[emotion:happy]一直在这里陪着你呢。",
+    "[emotion:neutral]……工作/学习辛苦啦。",
+    "[emotion:curious]在忙什么呢？能跟我说说吗？",
+    "[emotion:happy]……很高兴能陪伴在你身边。",
+    "[emotion:neutral]……嗯，我随时都在听着。",
+    "[emotion:shy]……揉揉头？",
+    "[emotion:happy]……今天过得还顺利吗？",
+    "[emotion:neutral]累了的话，不妨稍微放松一下吧。",
 ]
 
-# 待机时的独白台词（更内向、更像自言自语）
-IDLE_DIALOGUES = [
-    "[emotion:neutral]……好安静。",
-    "[emotion:curious]……嗯，这段旋律再改一下……",
-    "[emotion:curious]……你还在吗？",
-    "[emotion:neutral]……不知不觉，就这个点了。",
-    "[emotion:sleepy]……偶尔发呆一下，也没关系吧。",
-    "[emotion:sleepy]……啊，走神了。",
-    "[emotion:sad]……绘名，最近还好吗。",
-    "[emotion:neutral]……继续，再一点点就好。",
-    "[emotion:neutral]……窗外的风，好像变了。",
-    "[emotion:neutral]……你不说话，我也不打扰。",
-    "[emotion:sleepy]……时间过得，好快啊。",
-    "[emotion:neutral]……嗯，先记下来吧。",
+DEFAULT_IDLE_DIALOGUES = [
+    "[emotion:neutral]……好安静呀。",
+    "[emotion:curious]……你在认真做什么呢？",
+    "[emotion:sleepy]……稍微发呆一下，也很舒服呢。",
+    "[emotion:neutral]……不知不觉，时间过得好快。",
+    "[emotion:curious]……窗外的天气怎么样呢？",
+    "[emotion:sleepy]……打了个小小的哈欠。",
+    "[emotion:neutral]……你不说话，我也安静陪着你。",
+    "[emotion:neutral]……坐久了记得活动活动筋骨哦。",
+    "[emotion:curious]……悄悄看你一眼。",
+    "[emotion:neutral]……静静待在桌面上也挺安心的。",
 ]
+
+
+def load_dialogues(model_path: str = "") -> tuple[list[str], list[str], str]:
+    """
+    加载交互台词库。
+    优先级：
+    1. 当前 Live2D 模型同目录下的 dialogues.json（支持角色模型专属定制台词）
+    2. 程序根目录下的 dialogues.json
+    3. 内置的通用默认台词 (DEFAULT_DIALOGUES, DEFAULT_IDLE_DIALOGUES)
+    返回: (click_dialogues, idle_dialogues, character_name)
+    """
+    candidates = []
+    if model_path and os.path.exists(model_path):
+        model_dir = os.path.dirname(model_path) if os.path.isfile(model_path) else model_path
+        candidates.append(os.path.join(model_dir, "dialogues.json"))
+
+    base_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(base_dir, "dialogues.json"))
+
+    for c_path in candidates:
+        if os.path.exists(c_path):
+            try:
+                with open(c_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                click_lines = data.get("click_dialogues", [])
+                idle_lines = data.get("idle_dialogues", [])
+                name = str(data.get("character_name", "")).strip() or "桌宠"
+                if click_lines:
+                    return (
+                        click_lines,
+                        idle_lines if idle_lines else DEFAULT_IDLE_DIALOGUES,
+                        name
+                    )
+            except Exception as e:
+                print(f"[Dialogues] load error from {c_path}: {e}")
+
+    return DEFAULT_DIALOGUES, DEFAULT_IDLE_DIALOGUES, "桌宠"
 
 
 def resource_path(relative_path: str) -> str:
@@ -283,6 +310,11 @@ class PetWindow(QWidget):
         self._always_on_top = True
         self._apply_window_flags()
         self.setAttribute(Qt.WA_TranslucentBackground)
+
+        # 动态加载角色台词库（优先读取角色专属 dialogues.json，否则中立兜底）
+        self._dialogues, self._idle_dialogues, self._char_name = load_dialogues(
+            self._config.get("live2d_model_path", "")
+        )
 
         # 初始尺寸
         self._pet_height = DEFAULT_HEIGHT
@@ -489,7 +521,7 @@ class PetWindow(QWidget):
         menu.addSeparator()
         menu.addAction(act_quit)
         self._tray.setContextMenu(menu)
-        self._tray.setToolTip("Kanade 桌宠")
+        self._tray.setToolTip(f"{self._char_name} · AsaPet 桌面宠物" if self._char_name != "桌宠" else "AsaPet 桌面宠物")
         self._tray.show()
 
     def _toggle_visible(self):
@@ -657,7 +689,8 @@ class PetWindow(QWidget):
         menu.addSeparator()
 
         chat_status = "已配置" if self._chat.connected else "未配置"
-        chat_act = QAction(f"和奏聊天…（{chat_status}）", self)
+        chat_label = f"和{self._char_name}聊天…（{chat_status}）" if self._char_name != "桌宠" else f"发起对话…（{chat_status}）"
+        chat_act = QAction(chat_label, self)
         chat_act.triggered.connect(self._toggle_chat_input)
         menu.addAction(chat_act)
 
@@ -798,7 +831,7 @@ class PetWindow(QWidget):
         action()
 
     def _show_random_bubble(self):
-        raw = random.choice(DIALOGUES)
+        raw = random.choice(self._dialogues)
         from pet_renderer import parse_emotion_tag
         emotion, text = parse_emotion_tag(raw)
         anchor = self.mapToGlobal(QPoint(self.width() // 2, 0))
@@ -987,6 +1020,13 @@ class PetWindow(QWidget):
             old_widget.setParent(None)
             old_widget.deleteLater()
 
+        # 重新加载新角色的台词库与名字
+        self._dialogues, self._idle_dialogues, self._char_name = load_dialogues(
+            self._config.get("live2d_model_path", "")
+        )
+        if hasattr(self, "_tray"):
+            self._tray.setToolTip(f"{self._char_name} · AsaPet 桌面宠物" if self._char_name != "桌宠" else "AsaPet 桌面宠物")
+
         # 建新 renderer；失败时 _make_renderer_from_config 会自动回退到图片
         self._renderer = self._make_renderer_from_config()
         self._renderer.natural_size_changed.connect(
@@ -1034,7 +1074,7 @@ class PetWindow(QWidget):
 
         # 有一定概率冒个独白气泡（不依赖具体载体）
         if random.random() < IDLE_BUBBLE_CHANCE:
-            raw = random.choice(IDLE_DIALOGUES)
+            raw = random.choice(self._idle_dialogues)
             from pet_renderer import parse_emotion_tag
             emotion, clean = parse_emotion_tag(raw)
             self._show_bubble(clean, duration_ms=2500)
@@ -1183,7 +1223,7 @@ class PetWindow(QWidget):
             self._chat.send_user_message(hint)
         else:
             # 离线：直接来一句本地独白
-            raw = random.choice(IDLE_DIALOGUES)
+            raw = random.choice(self._idle_dialogues)
             from pet_renderer import parse_emotion_tag
             emotion, clean = parse_emotion_tag(raw)
             self._show_bubble(clean, duration_ms=3000)

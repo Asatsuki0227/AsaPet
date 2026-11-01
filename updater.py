@@ -26,7 +26,7 @@ GITHUB_REPO = "Asatsuki0227/AsaPet"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 # 更新时必须严格保护的用户数据文件（绝不覆盖）
-_PRESERVE_FILES = {"config.json", "persona.json", "memory.json", "chat_history.json"}
+_PRESERVE_FILES = {"config.json", "persona.json", "memory.json", "chat_history.json", "dialogues.json"}
 
 
 def _parse_version(tag: str) -> tuple[int, ...]:

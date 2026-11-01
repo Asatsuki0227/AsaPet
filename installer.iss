@@ -2,7 +2,7 @@
 ; 用于将 AsaPet 打包为标准的 Windows 安装包 (Setup.exe)
 
 #define MyAppName "AsaPet"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.5.1"
 #define MyAppPublisher "Asatsuki"
 #define MyAppURL "https://github.com/Asatsuki0227/AsaPet"
 #define MyAppExeName "AsaPet.exe"
@@ -34,10 +34,11 @@ Name: "autostart"; Description: "开机自动启动 AsaPet"; GroupDescription: "
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "1.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "1.png"; DestDir: "{app}"; Flags: ignoreversion; Tasks: 
 Source: "app.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "persona.example.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dialogues.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

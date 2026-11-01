@@ -28,6 +28,10 @@ dist/config.json
 persona.json
 dist/persona.json
 
+# 用户本地台词库（不入仓库；仓库里用 dialogues.example.json）
+dialogues.json
+dist/dialogues.json
+
 # 日志
 *.log
 build_log.txt

@@ -49,6 +49,7 @@ jobs:
           Copy-Item "app.ico" -Destination $packageDir\ -ErrorAction SilentlyContinue
           Copy-Item "config.example.json" -Destination $packageDir\
           Copy-Item "persona.example.json" -Destination $packageDir\
+          Copy-Item "dialogues.example.json" -Destination $packageDir\ -ErrorAction SilentlyContinue
           Copy-Item "README.md" -Destination $packageDir\
           Copy-Item "LICENSE" -Destination $packageDir\
 
