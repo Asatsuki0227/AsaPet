@@ -32,6 +32,16 @@ class AppDrawerDialog(QDialog):
         # 窗口标志：置顶、独立工具窗口
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
+        # 始终居中在屏幕正中央显示
+        from PySide6.QtGui import QCursor, QGuiApplication
+        from PySide6.QtWidgets import QApplication
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
+        self.move(
+            screen.center().x() - 460 // 2,
+            screen.center().y() - 560 // 2
+        )
+
         self._launcher = AppLauncher.get_instance()
         self._icon_provider = QFileIconProvider()
         self._icon_cache: dict[str, QIcon] = {}

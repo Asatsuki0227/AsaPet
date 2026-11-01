@@ -237,10 +237,25 @@ class UpdateDialog(QDialog):
     """现代无感更新进度窗口"""
 
     def __init__(self, download_url: str, target_dir: str, parent: Optional[QWidget] = None):
-        super().__init__(parent)
+        super().__init__(None)  # 传 None 独立于桌宠窗口，确保在屏幕居中
         self.setWindowTitle("软件自动更新")
         self.setFixedSize(420, 140)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowCloseButtonHint
+            | Qt.WindowStaysOnTopHint
+        )
+
+        # 始终居中在屏幕正中央显示
+        from PySide6.QtGui import QCursor, QGuiApplication
+        from PySide6.QtWidgets import QApplication
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
+        self.move(
+            screen.center().x() - 420 // 2,
+            screen.center().y() - 140 // 2
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -279,7 +294,15 @@ class UpdateDialog(QDialog):
         self.accept()
 
     def _on_error(self, err: str):
-        QMessageBox.critical(self, "更新失败", f"无法完成自动更新：\n\n{err}")
+        from PySide6.QtGui import QCursor, QGuiApplication
+        from PySide6.QtWidgets import QApplication
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
+        mb = QMessageBox(QMessageBox.Critical, "更新失败", f"无法完成自动更新：\n\n{err}", QMessageBox.Ok, None)
+        mb.setWindowFlags(mb.windowFlags() | Qt.WindowStaysOnTopHint)
+        mb.adjustSize()
+        mb.move(screen.center().x() - mb.width() // 2, screen.center().y() - mb.height() // 2)
+        mb.exec()
         self.reject()
 
     @property

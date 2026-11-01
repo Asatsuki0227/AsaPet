@@ -24,7 +24,7 @@ from PySide6.QtCore import (Qt, QTimer, QPoint, QPointF, QRect, QSize, QUrl,
                             Property, QObject)
 from PySide6.QtGui import (QPixmap, QPainter, QAction, QCursor, QFont,
                            QColor, QPainterPath, QBrush, QPen, QIcon,
-                           QFontMetrics, QSurfaceFormat)
+                           QFontMetrics, QSurfaceFormat, QGuiApplication)
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                                QSystemTrayIcon, QLineEdit, QVBoxLayout,
                                QInputDialog, QMessageBox, QDialog,
@@ -244,7 +244,8 @@ class BubbleWindow(QWidget):
         y = anchor_top_center.y() - h - 4
 
         # 屏幕边界修正
-        screen = QApplication.primaryScreen().availableGeometry()
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
         if x < screen.left():
             x = screen.left() + 2
         if x + w > screen.right():
@@ -327,7 +328,8 @@ class PetWindow(QWidget):
         self._apply_pet_size()
 
         # 定位到屏幕右下角
-        screen = QApplication.primaryScreen().availableGeometry()
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
         self.move(screen.right() - self.width() - 40,
                   screen.bottom() - self.height() - 40)
 
@@ -765,27 +767,45 @@ class PetWindow(QWidget):
         if not self._physics_enabled:
             self._stop_physics()
 
+    def _show_centered_info(self, title: str, text: str):
+        """在屏幕中央弹出信息框，避免遮挡桌宠"""
+        mb = QMessageBox(QMessageBox.Information, title, text, QMessageBox.Ok, None)
+        mb.setWindowFlags(mb.windowFlags() | Qt.WindowStaysOnTopHint)
+        mb.adjustSize()
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
+        mb.move(screen.center().x() - mb.width() // 2, screen.center().y() - mb.height() // 2)
+        mb.exec()
+
+    def _show_centered_question(self, title: str, text: str) -> bool:
+        """在屏幕中央弹出确认框，避免遮挡桌宠"""
+        mb = QMessageBox(QMessageBox.Question, title, text, QMessageBox.Yes | QMessageBox.No, None)
+        mb.setWindowFlags(mb.windowFlags() | Qt.WindowStaysOnTopHint)
+        mb.adjustSize()
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
+        mb.move(screen.center().x() - mb.width() // 2, screen.center().y() - mb.height() // 2)
+        return mb.exec() == QMessageBox.Yes
+
     def _check_for_update(self):
-        """右键菜单"检查更新"入口。"""
+        """右键菜单"检查更新"入口，所有弹窗始终在屏幕中心展示。"""
         info = check_for_update(VERSION)
         if info is None:
-            QMessageBox.information(self, "检查更新", f"当前已是最新版本 v{VERSION}")
+            self._show_centered_info("检查更新", f"当前已是最新版本 v{VERSION}")
             return
-        reply = QMessageBox.question(
-            self, "发现新版本",
+        yes = self._show_centered_question(
+            "发现新版本",
             f"新版本 v{info['version']}（当前 v{VERSION}）\n\n"
             f"更新说明：\n{info['notes'][:300]}\n\n"
             f"是否立即更新？（全自动秒级下载与安全替换）",
-            QMessageBox.Yes | QMessageBox.No,
         )
-        if reply != QMessageBox.Yes:
+        if not yes:
             return
         project_dir = os.path.dirname(os.path.abspath(__file__))
         dl_url = info.get("download_url") or info.get("zip_url")
-        dlg = UpdateDialog(dl_url, project_dir, parent=self)
+        dlg = UpdateDialog(dl_url, project_dir, parent=None)
         if dlg.exec() == QDialog.Accepted and dlg.new_exe_path:
-            QMessageBox.information(self, "更新完成",
-                                   f"更新完成！即将自动重启进入新版本...")
+            self._show_centered_info("更新完成", "更新完成！即将自动重启进入新版本...")
             os.startfile(dlg.new_exe_path)
             QApplication.instance().quit()
 
@@ -1408,7 +1428,8 @@ class PetWindow(QWidget):
         MAX_FALL_SPEED = 9.0  # 下落终端速度上限
         STOP_THRESHOLD = 0.6  # 速度低于此且在地面则停止
 
-        screen = QApplication.primaryScreen().availableGeometry()
+        active_screen = QGuiApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
         pet_w = self.width()
         pet_h = self.height()
 
@@ -1732,7 +1753,8 @@ class ChatInputWindow(QWidget):
 
     def show_near(self, pet_pos: QPoint, pet_size: QSize):
         """显示在桌宠左侧或右侧"""
-        screen = QApplication.primaryScreen().availableGeometry()
+        active_screen = QGuiApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        screen = active_screen.availableGeometry()
         x = pet_pos.x() - self.width() - 8
         y = pet_pos.y() + pet_size.height() // 2 - self.height() // 2
         if x < screen.left():
