@@ -41,6 +41,8 @@ from ai_chat import DirectAIClient, request_models, parse_models_response
 from persona_dialog import PersonaDialog
 from motion_editor_dialog import MotionEditorDialog
 from memory_dialog import MemoryDialog
+from app_launcher import AppLauncher, parse_open_tag
+from app_drawer_dialog import AppDrawerDialog
 
 
 # --------------------------- 配置区 ---------------------------
@@ -351,6 +353,10 @@ class PetWindow(QWidget):
         self._chat.start()
         self._refresh_ai_actions()
 
+        # 应用扫描与启动器
+        self._app_launcher = AppLauncher.get_instance()
+        self._last_user_message = ""
+
         # 聊天输入窗口
         self._chat_input = ChatInputWindow()
         self._chat_input.message_sent.connect(self._on_user_send)
@@ -636,11 +642,14 @@ class PetWindow(QWidget):
             motion_act.triggered.connect(self._open_motion_editor)
             menu.addAction(motion_act)
 
-            if self._config.get("chat_backend") == "direct_api":
-                ai_motion_act = QAction("AI自主选动作", self, checkable=True)
-                ai_motion_act.setChecked(self._config.get("ai_motion_picking", False))
-                ai_motion_act.triggered.connect(self._toggle_ai_motion_picking)
-                menu.addAction(ai_motion_act)
+            ai_motion_act = QAction("AI自主选动作", self, checkable=True)
+            ai_motion_act.setChecked(self._config.get("ai_motion_picking", False))
+            ai_motion_act.triggered.connect(self._toggle_ai_motion_picking)
+            menu.addAction(ai_motion_act)
+
+        drawer_act = QAction("应用抽屉（快捷启动）…", self)
+        drawer_act.triggered.connect(self._open_app_drawer)
+        menu.addAction(drawer_act)
 
         menu.addSeparator()
 
@@ -797,30 +806,73 @@ class PetWindow(QWidget):
         else:
             self._chat_input.show_near(self.pos(), self.size())
 
+    def _open_app_drawer(self):
+        """打开应用抽屉/快捷启动窗口"""
+        dlg = AppDrawerDialog(self)
+        dlg.exec()
+
     def _on_user_send(self, text: str):
         """用户在输入框按回车发送消息"""
+        clean_user = text.strip()
+        self._last_user_message = clean_user
+
+        # 本地离线快速检查：若未配置 API，但用户明确输入了“打开/启动xxx”，依然支持直接本地唤起！
         if not self._chat.connected:
+            import re
+            m = re.match(r"^(请|帮我|麻烦|麻烦帮我)?(打开|启动|运行|开一下|开下)\s*(.+)$", clean_user)
+            if m:
+                kw = m.group(3).strip()
+                ok, app_name = self._app_launcher.find_and_launch(kw)
+                if ok:
+                    self._show_bubble(f"……嗯，帮你把「{app_name}」打开了。")
+                    return
+                else:
+                    self._show_bubble(f"……唔，电脑里没找到「{kw}」呢。")
+                    return
             self._show_bubble("……还没配置 API key 呢，右键点击「模型」填一下吧。")
             return
+
         self._chat.send_user_message(text)
-        # 不弹"让我想想"，安静等待回复
 
     def _on_bot_reply(self, text: str):
-        """对话后端回复到达，显示在气泡里"""
+        """对话后端回复到达，显示在气泡里并检测应用启动意图"""
         if not text:
             return
+
+        # 1. 优先解析 [open:xxx] 软件启动标签
+        open_kw, text_without_open = parse_open_tag(text)
+
+        # 2. 解析 [emotion:xxx] 表情动作标签
         from pet_renderer import parse_emotion_tag
-        _, clean_text = parse_emotion_tag(text)
+        _, clean_text = parse_emotion_tag(text_without_open)
         self._show_bubble(clean_text)
-        # 让渲染层做个"回话"反应（Live2D 会播对应情绪动作）
-        # AI 自主选动作是在回复显示之后才发起的独立请求，结果会晚一点到——
-        # 这里不等它，只要功能开着就直接不跑关键词瞎猜，交给 AI 的选择说了算
+
+        # 3. 渲染层动作反应
         self._renderer.on_message(text, self, pick_body=not self._ai_motion_picking_active())
+
+        # 4. 执行应用启动
+        if open_kw:
+            self._handle_app_launch(open_kw)
+        elif self._last_user_message:
+            # 兜底：若 AI 未吐出 [open:...] 标签，但用户原话明确包含“打开/启动/开一下xxx”
+            import re
+            m = re.match(r"^(请|帮我|麻烦|麻烦帮我)?(打开|启动|运行|开一下|开下)\s*(.+)$", self._last_user_message)
+            if m:
+                kw = m.group(3).strip()
+                self._handle_app_launch(kw, show_fail_bubble=False)
+
+    def _handle_app_launch(self, keyword: str, show_fail_bubble: bool = True):
+        """在后台执行应用检索与启动"""
+        ok, app_name = self._app_launcher.find_and_launch(keyword)
+        if not ok and show_fail_bubble:
+            QTimer.singleShot(2500, lambda: self._show_bubble(
+                f"……唔，电脑里好像没有找到「{keyword}」呢（可以在右键「应用抽屉」里查看）。",
+                duration_ms=4500
+            ))
 
     def _ai_motion_picking_active(self) -> bool:
         return bool(
-            self._config.get("chat_backend") == "direct_api"
-            and self._config.get("ai_motion_picking", False)
+            self._config.get("ai_motion_picking", False)
             and hasattr(self._renderer, "get_available_actions")
         )
 

@@ -180,26 +180,35 @@ def parse_models_response(reply: QNetworkReply) -> tuple[list[str], str]:
 def build_system_prompt(persona: dict, memory: Optional[dict] = None) -> str:
     """
     将人设 System Prompt 与本地长期记忆（称呼、已知事实）自然拼接。
-    保持人设主体的完整性，同时赋予角色对用户的长期记忆。
+    保持人设主体的完整性，同时赋予角色对用户的长期记忆与桌面应用启动能力。
     """
     base = persona.get("raw_prompt", "").strip() or DEFAULT_RAW_PROMPT
-    if not memory:
-        return base
+    sections = [base]
 
-    nickname = memory.get("user_nickname", "").strip()
-    facts = [f.strip() for f in memory.get("facts", []) if isinstance(f, str) and f.strip()]
+    if memory:
+        nickname = memory.get("user_nickname", "").strip()
+        facts = [f.strip() for f in memory.get("facts", []) if isinstance(f, str) and f.strip()]
 
-    if not nickname and not facts:
-        return base
+        if nickname or facts:
+            sections.append("\n---\n【关于用户的长期记忆】")
+            if nickname:
+                sections.append(f"- 用户称呼：{nickname}")
+            if facts:
+                sections.append("- 你了解到的关于用户的事实与生活近况：")
+                for f in facts:
+                    sections.append(f"  · {f}")
+            sections.append("【指引】这些是你与用户长期相处中记住的事情。请像熟悉的朋友一样，在适当时机自然体现对这些事情的关心，切勿生硬罗列或刻意背诵上述事实。")
 
-    sections = [base, "\n\n---\n【关于用户的长期记忆】"]
-    if nickname:
-        sections.append(f"- 用户称呼：{nickname}")
-    if facts:
-        sections.append("- 你了解到的关于用户的事实与生活近况：")
-        for f in facts:
-            sections.append(f"  · {f}")
-    sections.append("【指引】这些是你与用户长期相处中记住的事情。请像熟悉的朋友一样，在适当时机自然体现对这些事情的关心，切勿生硬罗列或刻意背诵上述事实。")
+    sections.append(
+        "\n---\n【电脑助手与软件启动能力】\n"
+        "你具备帮用户打开电脑上本地软件或应用的能力（例如听歌/网易云、玩游戏/Steam、写代码/VSCode、查资料/浏览器、计算器、记事本等）。\n"
+        "当且仅当用户表达了想打开某个程序、或想进行需要特定软件的活动（如“帮我开网易云”、“想听歌了”、“打开Steam”等）时：\n"
+        "1. 在你的台词末尾添加标签 `[open:软件关键词]`（如 `[open:网易云音乐]`、`[open:steam]`、`[open:vscode]`、`[open:计算器]`）。\n"
+        "2. 保持你的角色性格和轻柔口吻，自然地回复用户（例如：“……嗯，帮你打开网易云了。”）。\n"
+        "3. 该标签会被系统自动拦截并启动程序，不会显示在用户看到的气泡中。\n"
+        "4. 如果用户只是普通聊天，切勿输出任何 [open:...] 标签。"
+    )
+
     return "\n".join(sections)
 
 
