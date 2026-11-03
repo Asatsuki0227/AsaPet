@@ -60,3 +60,8 @@ memory.json
 chat_history.json
 dist/memory.json
 dist/chat_history.json
+
+# 本地自启备份与还原脚本
+backup_*.reg
+backup_autostart_snapshot.json
+restore_autostart.py
