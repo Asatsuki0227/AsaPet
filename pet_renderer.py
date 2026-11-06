@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import json
 import random
+import time
 from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QObject, QPoint, QSize, QTimer, Signal
@@ -447,6 +448,8 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
         self._fixed_face_name: Optional[str] = None
         self._fixed_face_params: dict[str, float] = {}
         self._pending_face: Optional[str] = None
+        self._action_in_progress = False
+        self._action_start_time = 0.0
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_AlwaysStackOnTop, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -523,8 +526,35 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
             return
         try:
             self._model.StartMotion(group, 0, priority)
+            if priority > _live2d.MotionPriority.IDLE:
+                self._action_in_progress = True
+                self._action_start_time = time.time()
         except Exception as e:
             print(f"[Live2D] StartMotion({group}) failed: {e}")
+
+    def _return_to_rest_pose(self) -> None:
+        """动作播完后平滑切回标准放松站姿，手臂自然垂下"""
+        if self._model is None or self._picker is None:
+            return
+        rest_group = None
+        for candidate in ["w-normal01-pose", "w-adult01-pose", "w-adult02-pose", "w-adult05-pose", "w-normal03-pose"]:
+            if candidate in self._all_groups:
+                rest_group = candidate
+                break
+        if not rest_group:
+            neutrals = self._picker.get_map().get("neutral", [])
+            for g in neutrals:
+                if "pose" in g:
+                    rest_group = g
+                    break
+        if not rest_group:
+            rest_group = self._picker.pick("neutral")
+
+        if rest_group:
+            try:
+                self._model.StartMotion(rest_group, 0, _live2d.MotionPriority.IDLE)
+            except Exception as e:
+                print(f"[Live2D] return to rest pose failed: {e}")
 
     def initializeGL(self):
         _live2d.glInit()
@@ -599,6 +629,14 @@ class Live2DGLWidget(QOpenGLWidget if LIVE2D_AVAILABLE else QWidget):
         if self._model is not None:
             try:
                 self._model.Update()
+
+                # 动作播完（或超时4.0秒兜底）自动平滑回归自然放松站姿，手臂自然放下
+                if getattr(self, "_action_in_progress", False):
+                    now = time.time()
+                    if self._model.IsMotionFinished() or (now - getattr(self, "_action_start_time", 0) > 4.0):
+                        self._action_in_progress = False
+                        self._return_to_rest_pose()
+
                 # Update() 刚把当前 motion 的曲线写进参数，这里覆盖掉脸部那几十个，
                 # 于是身体照着动作走、表情保持用户选的那个。顺序不能反。
                 if self._fixed_face_params:
@@ -730,9 +768,16 @@ class Live2DRenderer(PetRenderer):
                 self._widget.set_fixed_face(face)
 
     def on_click(self, window) -> None:
-        # 戳一戳先不做动作——等对方真的开口说话（on_message）才让身体/表情跟着换，
-        # 不然戳一下就乱动一次，跟话对不上，比不动更奇怪。
-        pass
+        # 戳一戳：播放互动动作（click/happy 桶），让点击有即时的肢体回馈
+        picker = self._widget.picker()
+        if picker is None:
+            return
+        group = picker.pick("click") or picker.pick("happy")
+        if group:
+            self._widget.start_motion(group, _live2d.MotionPriority.NORMAL)
+        face = picker.pick_face("happy") or picker.pick_face("neutral")
+        if face:
+            self._widget.set_fixed_face(face)
 
     def on_idle(self, window) -> None:
         # 待机：只动身体，脸保持不变，不然没人看的时候表情也在乱切很奇怪

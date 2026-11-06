@@ -62,9 +62,9 @@ WS_EX_TRANSPARENT = 0x00000020
 BUBBLE_DURATION_MS = 2200   # 气泡显示时间
 
 # 待机动画配置
-IDLE_TRIGGER_MS = 3 * 60 * 1000     # 无交互多久后开始播放待机动作（3 分钟）
-IDLE_INTERVAL_MIN_MS = 45 * 1000    # 待机动作之间的最小间隔
-IDLE_INTERVAL_MAX_MS = 120 * 1000   # 待机动作之间的最大间隔
+IDLE_TRIGGER_MS = 25 * 1000        # 无交互多久后开始播放待机动作（25 秒，让角色自然生动）
+IDLE_INTERVAL_MIN_MS = 20 * 1000   # 待机动作之间的最小间隔（20 秒）
+IDLE_INTERVAL_MAX_MS = 45 * 1000   # 待机动作之间的最大间隔（45 秒）
 IDLE_BUBBLE_CHANCE = 0.35           # 待机时冒独白气泡的概率
 
 # 主动搭话配置
@@ -915,8 +915,8 @@ class PetWindow(QWidget):
         _, clean_text = parse_emotion_tag(text_without_open)
         self._show_bubble(clean_text)
 
-        # 3. 渲染层动作反应
-        self._renderer.on_message(text, self, pick_body=not self._ai_motion_picking_active())
+        # 3. 渲染层动作反应：优先根据当前对话匹配动作，若开启AI自主选动作后续会以FORCE优先级无缝接管
+        self._renderer.on_message(text, self, pick_body=True)
 
         # 4. 执行应用启动
         if open_kw:
