@@ -10,6 +10,23 @@ Kanade 桌面宠物
 """
 import sys
 import os
+
+# 确保在 Windows GUI 无控制台环境下，C 级底层 stdout/stderr 不会因无效句柄导致 live2d C++ 崩溃
+if sys.platform == "win32":
+    try:
+        if getattr(sys, "frozen", False):
+            _log_dir = os.path.dirname(sys.executable)
+        else:
+            _log_dir = os.path.dirname(os.path.abspath(__file__))
+        _log_path = os.path.join(_log_dir, "run.log")
+        _log_fd = os.open(_log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        os.dup2(_log_fd, 1)
+        os.dup2(_log_fd, 2)
+        os.close(_log_fd)
+        sys.stdout = open(_log_path, "a", encoding="utf-8", buffering=1)
+        sys.stderr = open(_log_path, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        pass
 import json
 import time
 import random
